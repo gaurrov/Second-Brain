@@ -7,6 +7,7 @@ There is deliberately no `get_by_id(document_id)` method without a
 user_id — that shape of method would make it possible for a future
 caller to forget the ownership filter. See `get_by_id_for_user`.
 """
+import logging
 import uuid
 
 from sqlalchemy import func, select
@@ -16,9 +17,11 @@ from src.core.constants import ProcessingStatus
 from src.models.document_model import Document
 from src.repositories.base_repository import BaseRepository
 
+logger = logging.getLogger("second_brain.document_repository")
+
 
 class DocumentRepository(BaseRepository[Document]):
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         super().__init__(model=Document, db=db)
 
     def get_by_id(self, record_id: uuid.UUID) -> Document | None:
@@ -78,6 +81,7 @@ class DocumentRepository(BaseRepository[Document]):
         chunk_count: int | None = None,
         error_message: str | None = None,
     ) -> Document:
+        """Update the processing status of a document and commit immediately."""
         document.processing_status = status
         if chunk_count is not None:
             document.chunk_count = chunk_count

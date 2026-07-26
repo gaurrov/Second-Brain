@@ -52,3 +52,19 @@ def client(db_session):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+@pytest.fixture(autouse=True)
+def _disable_real_qdrant(monkeypatch):
+    """
+    Prevents every test that spins up TestClient(app) from making a real
+    network attempt to Qdrant during the app's lifespan startup hook.
+    Without this, every single test pays the cost of a real (failing)
+    connection attempt, since `ensure_collection(get_qdrant_client())`
+    runs on every app startup regardless of what the test is actually
+    exercising.
+    """
+    import src.vectorstore.collection_manager as collection_manager_module
+    import src.vectorstore.qdrant_client as qdrant_client_module
+
+    monkeypatch.setattr(qdrant_client_module, "get_qdrant_client", lambda: None)
+    monkeypatch.setattr(collection_manager_module, "ensure_collection", lambda client: None)

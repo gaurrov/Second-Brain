@@ -9,7 +9,7 @@ query params, or path.
 """
 from uuid import UUID
 
-from fastapi import Depends
+from fastapi import BackgroundTasks, Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,7 @@ from src.services.ingestion_service import process_document_task
 # tokenUrl is documentation-only here (points Swagger's "Authorize" button
 # at the login endpoint); the actual login route returns JSON, not an
 # OAuth2 form redirect.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
 
 def get_user_repository(db: Session = Depends(get_db)) -> UserRepository:
@@ -62,11 +62,6 @@ def get_current_user(
         raise InactiveUserException()
 
     return user
-
-
-def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
-    """Alias kept explicit for readability at call sites that care about activity status."""
-    return current_user
 
 
 def get_document_repository(db: Session = Depends(get_db)) -> DocumentRepository:

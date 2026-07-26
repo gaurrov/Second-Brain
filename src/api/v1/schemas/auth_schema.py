@@ -31,7 +31,7 @@ class UserRegisterRequest(BaseModel):
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class TokenResponse(BaseModel):

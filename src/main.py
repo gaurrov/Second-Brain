@@ -12,6 +12,8 @@ No business logic, no route handlers, and no DB queries belong here.
 """
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,6 +44,25 @@ logging.basicConfig(
 logger = logging.getLogger("second_brain")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Application startup and shutdown lifecycle."""
+    Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+
+    try:
+        from src.vectorstore.collection_manager import ensure_collection
+        from src.vectorstore.qdrant_client import get_qdrant_client
+
+        ensure_collection(get_qdrant_client())
+    except Exception as exc:
+        # Don't crash app startup if Qdrant isn't reachable yet (e.g.
+        # local dev before `docker compose up`); ingestion calls will
+        # surface a clear error instead when a document is uploaded.
+        logger.warning("Could not initialize Qdrant collection on startup: %s", exc)
+
+    yield
+
+
 def create_application() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
@@ -49,31 +70,14 @@ def create_application() -> FastAPI:
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     _register_middleware(app)
     _register_exception_handlers(app)
     _register_routers(app)
-    _register_startup_hooks(app)
 
     return app
-
-
-def _register_startup_hooks(app: FastAPI) -> None:
-    @app.on_event("startup")
-    def ensure_infrastructure() -> None:
-        Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
-
-        try:
-            from src.vectorstore.collection_manager import ensure_collection
-            from src.vectorstore.qdrant_client import get_qdrant_client
-
-            ensure_collection(get_qdrant_client())
-        except Exception as exc:
-            # Don't crash app startup if Qdrant isn't reachable yet (e.g.
-            # local dev before `docker compose up`); ingestion calls will
-            # surface a clear error instead when a document is uploaded.
-            logger.warning("Could not initialize Qdrant collection on startup: %s", exc)
 
 
 def _register_middleware(app: FastAPI) -> None:

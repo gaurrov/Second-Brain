@@ -12,7 +12,10 @@ import io
 
 import pytest
 
+from src.core.config import settings
 from src.services import document_service as document_service_module
+
+API_PREFIX = settings.API_V1_PREFIX
 
 
 @pytest.fixture(autouse=True)
@@ -50,11 +53,11 @@ class _NoOpVectorRepository:
 
 def _register_and_login(client, email="jane@example.com", username="jane_doe"):
     client.post(
-        "/api/auth/register",
+        f"{API_PREFIX}/auth/register",
         json={"username": username, "email": email, "password": "StrongP@ss123"},
     )
     login_response = client.post(
-        "/api/auth/login", json={"email": email, "password": "StrongP@ss123"}
+        f"{API_PREFIX}/auth/login", json={"email": email, "password": "StrongP@ss123"}
     )
     token = login_response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -62,7 +65,7 @@ def _register_and_login(client, email="jane@example.com", username="jane_doe"):
 
 def _upload_txt(client, headers, content=b"Hello world, this is a test document.", filename="note.txt"):
     return client.post(
-        "/api/documents/upload",
+        f"{API_PREFIX}/documents/upload",
         headers=headers,
         files={"file": (filename, io.BytesIO(content), "text/plain")},
     )
@@ -82,7 +85,7 @@ class TestUpload:
     def test_upload_rejects_unsupported_extension(self, client):
         headers = _register_and_login(client)
         response = client.post(
-            "/api/documents/upload",
+            f"{API_PREFIX}/documents/upload",
             headers=headers,
             files={"file": ("malware.exe", io.BytesIO(b"binary"), "application/octet-stream")},
         )
@@ -91,7 +94,7 @@ class TestUpload:
     def test_upload_rejects_empty_file(self, client):
         headers = _register_and_login(client)
         response = client.post(
-            "/api/documents/upload",
+            f"{API_PREFIX}/documents/upload",
             headers=headers,
             files={"file": ("empty.txt", io.BytesIO(b""), "text/plain")},
         )
@@ -99,7 +102,7 @@ class TestUpload:
 
     def test_upload_requires_authentication(self, client):
         response = client.post(
-            "/api/documents/upload",
+            f"{API_PREFIX}/documents/upload",
             files={"file": ("note.txt", io.BytesIO(b"hello"), "text/plain")},
         )
         assert response.status_code == 401
@@ -114,8 +117,8 @@ class TestListAndGet:
         _upload_txt(client, headers_b, filename="b_doc.txt")
         _upload_txt(client, headers_b, filename="b_doc2.txt")
 
-        response_a = client.get("/api/documents", headers=headers_a)
-        response_b = client.get("/api/documents", headers=headers_b)
+        response_a = client.get(f"{API_PREFIX}/documents", headers=headers_a)
+        response_b = client.get(f"{API_PREFIX}/documents", headers=headers_b)
 
         assert response_a.json()["total"] == 1
         assert response_a.json()["documents"][0]["filename"] == "a_doc.txt"
@@ -129,17 +132,17 @@ class TestListAndGet:
         document_id = upload_response.json()["id"]
 
         # User B must not be able to fetch User A's document.
-        response = client.get(f"/api/documents/{document_id}", headers=headers_b)
+        response = client.get(f"{API_PREFIX}/documents/{document_id}", headers=headers_b)
         assert response.status_code == 404
 
         # User A can fetch their own.
-        response_own = client.get(f"/api/documents/{document_id}", headers=headers_a)
+        response_own = client.get(f"{API_PREFIX}/documents/{document_id}", headers=headers_a)
         assert response_own.status_code == 200
 
     def test_get_nonexistent_document_returns_404(self, client):
         headers = _register_and_login(client)
         fake_id = "00000000-0000-0000-0000-000000000000"
-        response = client.get(f"/api/documents/{fake_id}", headers=headers)
+        response = client.get(f"{API_PREFIX}/documents/{fake_id}", headers=headers)
         assert response.status_code == 404
 
 
@@ -149,10 +152,10 @@ class TestDelete:
         upload_response = _upload_txt(client, headers)
         document_id = upload_response.json()["id"]
 
-        delete_response = client.delete(f"/api/documents/{document_id}", headers=headers)
+        delete_response = client.delete(f"{API_PREFIX}/documents/{document_id}", headers=headers)
         assert delete_response.status_code == 204
 
-        get_response = client.get(f"/api/documents/{document_id}", headers=headers)
+        get_response = client.get(f"{API_PREFIX}/documents/{document_id}", headers=headers)
         assert get_response.status_code == 404
 
     def test_delete_other_users_document_forbidden(self, client):
@@ -162,9 +165,9 @@ class TestDelete:
         upload_response = _upload_txt(client, headers_a, filename="secret.txt")
         document_id = upload_response.json()["id"]
 
-        delete_response = client.delete(f"/api/documents/{document_id}", headers=headers_b)
+        delete_response = client.delete(f"{API_PREFIX}/documents/{document_id}", headers=headers_b)
         assert delete_response.status_code == 404
 
         # Confirm it's still there for the rightful owner.
-        get_response = client.get(f"/api/documents/{document_id}", headers=headers_a)
+        get_response = client.get(f"{API_PREFIX}/documents/{document_id}", headers=headers_a)
         assert get_response.status_code == 200

@@ -1,13 +1,19 @@
 """
 Text splitting: turns cleaned per-page text into overlapping chunks
-suitable for embedding. Built on LangChain's RecursiveCharacterTextSplitter
-(tries to split on paragraph/sentence/word boundaries before falling back
-to a hard character cut), so chunks stay semantically coherent rather
-than being cut mid-sentence whenever possible.
+suitable for embedding.
+
+This is a small, self-contained recursive character splitter — the same
+algorithm LangChain's RecursiveCharacterTextSplitter uses (try splitting
+on progressively finer separators, falling back to a hard cut), kept
+in-house rather than pulled from `langchain-text-splitters`. That package
+transitively drags in `langchain-core`, which hard-imports the compiled
+`uuid_utils` extension for UUIDv7 generation — on locked-down Windows
+environments with an Application Control Policy, that DLL gets blocked
+and breaks the import chain entirely. Since we only ever used this one
+splitting utility, vendoring it removes the dependency rather than
+working around the block.
 """
 from dataclasses import dataclass
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.core.config import settings
 from src.rag.cleaners.text_cleaner import clean_text
@@ -21,12 +27,76 @@ class TextChunk:
     content: str
 
 
+class _RecursiveCharacterSplitter:
+    """
+    Splits text into chunks of at most `chunk_size` characters, with
+    `chunk_overlap` characters of overlap between consecutive chunks.
+    Tries each separator in `separators` in order (paragraph breaks,
+    then line breaks, then sentence breaks, then spaces), recursively
+    splitting oversized pieces on the next separator down, and only
+    falls back to a hard character cut if a piece has no separator at
+    all left to split on.
+    """
+
+    def __init__(self, chunk_size: int, chunk_overlap: int):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.separators = ["\n\n", "\n", ". ", " ", ""]
+
+    def split_text(self, text: str) -> list[str]:
+        pieces = self._split(text, self.separators)
+        return self._merge_with_overlap(pieces)
+
+    def _split(self, text: str, separators: list[str]) -> list[str]:
+        if len(text) <= self.chunk_size:
+            return [text] if text else []
+
+        if not separators:
+            # No separators left — hard cut at chunk_size.
+            return [text[i : i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
+
+        separator, remaining_separators = separators[0], separators[1:]
+
+        if separator == "":
+            return [text[i : i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
+
+        parts = text.split(separator)
+        results: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            if len(part) <= self.chunk_size:
+                results.append(part)
+            else:
+                results.extend(self._split(part, remaining_separators))
+        return results
+
+    def _merge_with_overlap(self, pieces: list[str]) -> list[str]:
+        """Greedily packs split pieces back together up to chunk_size, carrying overlap forward."""
+        if not pieces:
+            return []
+
+        merged: list[str] = []
+        current = pieces[0]
+
+        for piece in pieces[1:]:
+            candidate = f"{current} {piece}" if current and piece else current + piece
+            if len(candidate) <= self.chunk_size:
+                current = candidate
+            else:
+                merged.append(current)
+                overlap_tail = current[-self.chunk_overlap :] if self.chunk_overlap else ""
+                current = f"{overlap_tail} {piece}".strip() if overlap_tail else piece
+        merged.append(current)
+
+        return [chunk for chunk in merged if chunk.strip()]
+
+
 class TextSplitterService:
     def __init__(self, chunk_size: int | None = None, chunk_overlap: int | None = None):
-        self._splitter = RecursiveCharacterTextSplitter(
+        self._splitter = _RecursiveCharacterSplitter(
             chunk_size=chunk_size or settings.CHUNK_SIZE,
             chunk_overlap=chunk_overlap or settings.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", ". ", " ", ""],
         )
 
     def split_pages(self, pages: list[LoadedPage]) -> list[TextChunk]:

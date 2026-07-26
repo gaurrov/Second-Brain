@@ -5,6 +5,10 @@ live (uniqueness checks, credential verification, token issuance). It
 knows nothing about HTTP — it raises domain exceptions from
 src.core.exceptions, which the API layer translates to HTTP responses.
 """
+import logging
+
+from uuid import UUID
+
 from src.api.v1.schemas.auth_schema import TokenResponse, UserLoginRequest, UserRegisterRequest
 from src.core.exceptions import (
     InactiveUserException,
@@ -20,14 +24,14 @@ from src.core.security import (
     hash_password,
     verify_password,
 )
-from uuid import UUID
-
 from src.models.user_model import User
 from src.repositories.user_repository import UserRepository
 
+logger = logging.getLogger("second_brain.auth_service")
+
 
 class AuthService:
-    def __init__(self, user_repository: UserRepository):
+    def __init__(self, user_repository: UserRepository) -> None:
         self.user_repository = user_repository
 
     def register(self, payload: UserRegisterRequest) -> User:
@@ -42,7 +46,9 @@ class AuthService:
             email=payload.email,
             hashed_password=hash_password(payload.password),
         )
-        return self.user_repository.create(user)
+        user = self.user_repository.create(user)
+        logger.info("User registered: id=%s username=%s", user.id, user.username)
+        return user
 
     def authenticate(self, payload: UserLoginRequest) -> User:
         """
@@ -57,6 +63,7 @@ class AuthService:
         if not user.is_active:
             raise InactiveUserException()
 
+        logger.info("User authenticated: id=%s", user.id)
         return user
 
     def issue_tokens(self, user: User) -> TokenResponse:
@@ -78,4 +85,5 @@ class AuthService:
         if not user.is_active:
             raise InactiveUserException()
 
+        logger.info("Tokens refreshed for user: id=%s", user.id)
         return self.issue_tokens(user)

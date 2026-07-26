@@ -16,6 +16,7 @@ from src.core.config import settings
 
 @lru_cache
 def get_qdrant_client() -> QdrantClient:
+    """Return a process-wide QdrantClient singleton (lazily constructed)."""
     return QdrantClient(
         host=settings.QDRANT_HOST,
         port=settings.QDRANT_PORT,

@@ -4,6 +4,7 @@ File validation and storage utilities.
 Pure I/O and validation helpers — no business logic, no DB access. Used
 by `document_service.py` during the upload flow.
 """
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -13,6 +14,8 @@ from fastapi import UploadFile
 from src.core.config import settings
 from src.core.constants import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS, FileType
 from src.core.exceptions import EmptyFileException, FileTooLargeException, UnsupportedFileTypeException
+
+logger = logging.getLogger("second_brain.file_utils")
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.\-]")
 

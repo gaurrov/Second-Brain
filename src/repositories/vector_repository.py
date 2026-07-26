@@ -10,6 +10,7 @@ Query/search-by-similarity (used by the RAG retrieval flow) is added in
 the chat/retrieval module; this module currently covers the write and
 delete paths needed for document ingestion and management.
 """
+import logging
 import uuid
 
 from qdrant_client import QdrantClient
@@ -17,6 +18,8 @@ from qdrant_client.http import models as qmodels
 
 from src.core.config import settings
 from src.rag.splitters.text_splitter import TextChunk
+
+logger = logging.getLogger("second_brain.vector_repository")
 
 
 class VectorRepository:
@@ -62,6 +65,10 @@ class VectorRepository:
 
         if points:
             self.client.upsert(collection_name=self.collection_name, points=points)
+            logger.debug(
+                "Upserted %d vectors for document=%s user=%s",
+                len(points), document_id, user_id,
+            )
 
         return len(points)
 
@@ -86,6 +93,9 @@ class VectorRepository:
                     ]
                 )
             ),
+        )
+        logger.debug(
+            "Deleted vectors for document=%s user=%s", document_id, user_id
         )
 
     def count_by_document(self, document_id: uuid.UUID, user_id: uuid.UUID) -> int:

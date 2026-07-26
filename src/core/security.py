@@ -1,5 +1,5 @@
 """
-Security primitives: password hashing (bcrypt via passlib) and JWT
+Security primitives: password hashing (bcrypt) and JWT
 creation/validation (python-jose). No business logic lives here — this
 module only deals with cryptographic concerns.
 """
@@ -8,13 +8,24 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from src.core.config import settings
 from src.core.exceptions import InvalidTokenException, TokenExpiredException
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt operates on bytes and has a hard 72-BYTE input limit (not 72
+# characters — a multi-byte UTF-8 password can exceed this well under
+# 72 characters). bcrypt>=4.1 raises ValueError past this limit instead
+# of silently truncating like older versions / passlib's CryptContext
+# did. We truncate explicitly here to preserve that old, safe behavior
+# consistently between hashing and verification, rather than letting a
+# long password 500 the request.
+_BCRYPT_MAX_BYTES = 72
+
+
+def _prepare_password_bytes(plain_password: str) -> bytes:
+    return plain_password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
 
 
 class TokenType(str, Enum):
@@ -27,12 +38,18 @@ class TokenType(str, Enum):
 # --------------------------------------------------------------------------
 def hash_password(plain_password: str) -> str:
     """Hash a plaintext password for storage."""
-    return pwd_context.hash(plain_password)
+    return bcrypt.hashpw(
+        _prepare_password_bytes(plain_password),
+        bcrypt.gensalt(),
+    ).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against its stored bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    return bcrypt.checkpw(
+        _prepare_password_bytes(plain_password),
+        hashed_password.encode("utf-8"),
+    )
 
 
 # --------------------------------------------------------------------------

@@ -39,7 +39,7 @@ class IngestionService:
         vector_repository: VectorRepository,
         embedding_service: EmbeddingService,
         text_splitter: TextSplitterService | None = None,
-    ):
+    ) -> None:
         self.document_repository = document_repository
         self.vector_repository = vector_repository
         self.embedding_service = embedding_service

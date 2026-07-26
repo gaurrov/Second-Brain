@@ -29,7 +29,7 @@ class EmbeddingService:
 
     QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._model = _get_model()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
