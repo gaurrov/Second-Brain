@@ -4,6 +4,8 @@ User repository.
 All direct SQL/ORM querying for the `users` table happens here — the
 service layer never issues a query directly against `models.User`.
 """
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,3 +30,19 @@ class UserRepository(BaseRepository[User]):
             (User.email == email) | (User.username == username)
         )
         return self.db.execute(stmt).first() is not None
+
+    def record_failed_login(self, user: User, max_attempts: int, lock_minutes: int) -> User:
+        user.failed_login_attempts += 1
+        if user.failed_login_attempts >= max_attempts:
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lock_minutes)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def reset_login_security_state(self, user: User) -> User:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.last_login_at = datetime.now(timezone.utc)
+        self.db.commit()
+        self.db.refresh(user)
+        return user

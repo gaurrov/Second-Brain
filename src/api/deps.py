@@ -18,6 +18,7 @@ from src.core.security import TokenType, decode_token
 from src.db.session import get_db
 from src.models.user_model import User
 from src.repositories.document_repository import DocumentRepository
+from src.repositories.refresh_token_repository import RefreshTokenRepository
 from src.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
 from src.services.document_service import DocumentService
@@ -33,10 +34,15 @@ def get_user_repository(db: Session = Depends(get_db)) -> UserRepository:
     return UserRepository(db)
 
 
+def get_refresh_token_repository(db: Session = Depends(get_db)) -> RefreshTokenRepository:
+    return RefreshTokenRepository(db)
+
+
 def get_auth_service(
     user_repository: UserRepository = Depends(get_user_repository),
+    refresh_token_repository: RefreshTokenRepository = Depends(get_refresh_token_repository),
 ) -> AuthService:
-    return AuthService(user_repository)
+    return AuthService(user_repository, refresh_token_repository)
 
 
 def get_current_user(

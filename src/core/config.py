@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCK_MINUTES: int = 15
 
     # --- CORS ---
     CORS_ORIGINS: List[str] = ["http://localhost:3000"]
