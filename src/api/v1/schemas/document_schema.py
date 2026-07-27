@@ -26,6 +26,7 @@ class DocumentResponse(BaseModel):
     chunk_count: int
     file_size_bytes: int
     error_message: str | None = None
+    updated_at: datetime | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -40,3 +41,4 @@ class DocumentStatusResponse(BaseModel):
     processing_status: ProcessingStatus
     chunk_count: int
     error_message: str | None = None
+    updated_at: datetime | None = None

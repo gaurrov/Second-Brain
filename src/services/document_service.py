@@ -23,7 +23,7 @@ from src.core.exceptions import DocumentNotFoundException
 from src.models.document_model import Document
 from src.repositories.document_repository import DocumentRepository
 from src.repositories.vector_repository import VectorRepository
-from src.utils.file_utils import build_storage_path, delete_document_directory, save_upload_file, validate_file_type
+from src.utils.file_utils import build_storage_path, delete_document_directory, save_upload_file, validate_file_type, validate_magic_bytes
 from src.vectorstore.qdrant_client import get_qdrant_client
 
 logger = logging.getLogger("second_brain.document_service")
@@ -51,6 +51,8 @@ class DocumentService:
         document_id = uuid.uuid4()
         storage_path = build_storage_path(user_id, document_id, file.filename)
         bytes_written = await save_upload_file(file, storage_path)
+
+        validate_magic_bytes(storage_path, file_type)
 
         document = Document(
             id=document_id,

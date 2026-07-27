@@ -45,6 +45,9 @@ def _mock_vector_layer(monkeypatch):
 
     monkeypatch.setattr(deps_module, "process_document_task", lambda document_id: None)
 
+    # No-op magic byte validation in tests since we're using synthetic files
+    monkeypatch.setattr(document_service_module, "validate_magic_bytes", lambda path, ft: None)
+
 
 class _NoOpVectorRepository:
     def delete_by_document(self, document_id, user_id):
@@ -81,6 +84,36 @@ class TestUpload:
         assert body["file_type"] == "txt"
         assert body["processing_status"] == "pending"
         assert body["chunk_count"] == 0
+
+    def test_upload_markdown_success(self, client):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/documents/upload",
+            headers=headers,
+            files={"file": ("readme.md", io.BytesIO(b"# Title\n\nSome content"), "text/markdown")},
+        )
+        assert response.status_code == 202
+        assert response.json()["file_type"] == "markdown"
+
+    def test_upload_html_success(self, client):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/documents/upload",
+            headers=headers,
+            files={"file": ("page.html", io.BytesIO(b"<html><body>Content</body></html>"), "text/html")},
+        )
+        assert response.status_code == 202
+        assert response.json()["file_type"] == "html"
+
+    def test_upload_csv_success(self, client):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/documents/upload",
+            headers=headers,
+            files={"file": ("data.csv", io.BytesIO(b"name,age\nAlice,30"), "text/csv")},
+        )
+        assert response.status_code == 202
+        assert response.json()["file_type"] == "csv"
 
     def test_upload_rejects_unsupported_extension(self, client):
         headers = _register_and_login(client)

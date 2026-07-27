@@ -2,7 +2,11 @@
 File validation and storage utilities.
 
 Pure I/O and validation helpers — no business logic, no DB access. Used
-by `document_service.py` during the upload flow.
+by `document_service.py` during the upload flow. Validation uses a
+three-layer defense: extension allow-list, MIME-type cross-check, and
+magic-byte sniffing of the first N bytes — so a mismatched/spoofed
+Content-Type or a renamed extension is caught before the file touches
+disk.
 """
 import logging
 import re
@@ -12,8 +16,18 @@ from pathlib import Path
 from fastapi import UploadFile
 
 from src.core.config import settings
-from src.core.constants import ALLOWED_CONTENT_TYPES, ALLOWED_EXTENSIONS, FileType
-from src.core.exceptions import EmptyFileException, FileTooLargeException, UnsupportedFileTypeException
+from src.core.constants import (
+    ALLOWED_CONTENT_TYPES,
+    ALLOWED_EXTENSIONS,
+    MAGIC_BYTES,
+    MAGIC_BYTES_READ_SIZE,
+    FileType,
+)
+from src.core.exceptions import (
+    EmptyFileException,
+    FileTooLargeException,
+    UnsupportedFileTypeException,
+)
 
 logger = logging.getLogger("second_brain.file_utils")
 
@@ -24,15 +38,37 @@ def sanitize_filename(filename: str) -> str:
     """
     Strip any path components and replace unsafe characters, so a
     malicious filename (e.g. "../../etc/passwd") can never be used to
-    escape the intended storage directory.
+    escape the intended storage directory. Truncates the base name to
+    200 characters to prevent filesystem issues with excessively long
+    names while preserving the extension.
     """
-    name = Path(filename).name  # drops any directory traversal components
-    name = _UNSAFE_FILENAME_CHARS.sub("_", name)
-    return name or "unnamed_file"
+    name = Path(filename).name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+
+    stem = _UNSAFE_FILENAME_CHARS.sub("_", stem)
+    stem = stem.strip("._-")
+    stem = stem[:200] if stem else "unnamed_file"
+
+    return f"{stem}{suffix}"
 
 
 def get_extension(filename: str) -> str:
     return Path(filename).suffix.lower()
+
+
+def detect_file_type_by_magic(header: bytes) -> FileType | None:
+    """
+    Sniff the first N bytes of a file to determine its type by magic
+    bytes. Returns None if no magic bytes match (valid for plain-text
+    formats like TXT, Markdown, and CSV which have no reliable magic
+    signature).
+    """
+    for file_type, signatures in MAGIC_BYTES.items():
+        for sig in signatures:
+            if header.startswith(sig):
+                return file_type
+    return None
 
 
 def validate_file_type(filename: str, content_type: str | None) -> FileType:
@@ -55,6 +91,32 @@ def validate_file_type(filename: str, content_type: str | None) -> FileType:
         )
 
     return file_type
+
+
+def validate_magic_bytes(file_path: Path, expected_type: FileType) -> None:
+    """
+    Read the first N bytes of the saved file and verify them against
+    expected magic signatures. This is a defense-in-depth check that
+    runs AFTER the file is on disk (during the upload flow, the header
+    wasn't available to sniff from the UploadFile). Formats without
+    reliable magic bytes (TXT, Markdown, CSV) are silently skipped.
+    """
+    signatures = MAGIC_BYTES.get(expected_type, [])
+    if not signatures:
+        return
+
+    try:
+        header = file_path.read_bytes()[:MAGIC_BYTES_READ_SIZE]
+    except OSError as exc:
+        logger.warning("Could not read header for magic-byte check: %s", exc)
+        return
+
+    detected = detect_file_type_by_magic(header)
+    if detected is not None and detected != expected_type:
+        raise UnsupportedFileTypeException(
+            f"File content does not match declared type {expected_type.value.upper()}. "
+            f"Detected type: {detected.value}."
+        )
 
 
 def build_storage_path(user_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> Path:

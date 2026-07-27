@@ -12,12 +12,23 @@ environments with an Application Control Policy, that DLL gets blocked
 and breaks the import chain entirely. Since we only ever used this one
 splitting utility, vendoring it removes the dependency rather than
 working around the block.
+
+Improvements over the base implementation:
+  - MIN_CHUNK_SIZE: rejects trivially short trailing chunks by merging
+    them back into the previous chunk instead of emitting noise.
+  - character_count on TextChunk: useful for cost estimation (token
+    budgets correlate with character counts) and debugging.
 """
+import logging
 from dataclasses import dataclass
 
 from src.core.config import settings
 from src.rag.cleaners.text_cleaner import clean_text
 from src.rag.loaders.base_loader import LoadedPage
+
+logger = logging.getLogger("second_brain.text_splitter")
+
+MIN_CHUNK_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -25,6 +36,7 @@ class TextChunk:
     chunk_index: int
     page_number: int | None
     content: str
+    character_count: int
 
 
 class _RecursiveCharacterSplitter:
@@ -52,7 +64,6 @@ class _RecursiveCharacterSplitter:
             return [text] if text else []
 
         if not separators:
-            # No separators left — hard cut at chunk_size.
             return [text[i : i + self.chunk_size] for i in range(0, len(text), self.chunk_size)]
 
         separator, remaining_separators = separators[0], separators[1:]
@@ -93,17 +104,25 @@ class _RecursiveCharacterSplitter:
 
 
 class TextSplitterService:
-    def __init__(self, chunk_size: int | None = None, chunk_overlap: int | None = None):
+    def __init__(
+        self,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        min_chunk_size: int = MIN_CHUNK_SIZE,
+    ):
         self._splitter = _RecursiveCharacterSplitter(
             chunk_size=chunk_size or settings.CHUNK_SIZE,
             chunk_overlap=chunk_overlap or settings.CHUNK_OVERLAP,
         )
+        self._min_chunk_size = min_chunk_size
 
     def split_pages(self, pages: list[LoadedPage]) -> list[TextChunk]:
         """
         Cleans and splits each page independently (so a chunk never spans
         a page boundary, keeping page-number metadata accurate), then
         assigns a single running chunk_index across the whole document.
+        Trailing chunks shorter than min_chunk_size are merged back into
+        the previous chunk to avoid emitting trivially short fragments.
         """
         chunks: list[TextChunk] = []
         running_index = 0
@@ -113,13 +132,51 @@ class TextSplitterService:
             if not cleaned:
                 continue
 
-            for piece in self._splitter.split_text(cleaned):
+            pieces = self._splitter.split_text(cleaned)
+            pending_tail: str | None = None
+
+            for piece in pieces:
                 piece = piece.strip()
                 if not piece:
                     continue
+                if pending_tail is not None:
+                    piece = f"{pending_tail} {piece}".strip() if pending_tail else piece
+                    pending_tail = None
+
+                if len(piece) < self._min_chunk_size:
+                    pending_tail = piece
+                    continue
+
                 chunks.append(
-                    TextChunk(chunk_index=running_index, page_number=page.page_number, content=piece)
+                    TextChunk(
+                        chunk_index=running_index,
+                        page_number=page.page_number,
+                        content=piece,
+                        character_count=len(piece),
+                    )
                 )
                 running_index += 1
 
+            if pending_tail is not None and pending_tail.strip():
+                if chunks:
+                    prev = chunks[-1]
+                    merged = f"{prev.content} {pending_tail}".strip()
+                    chunks[-1] = TextChunk(
+                        chunk_index=prev.chunk_index,
+                        page_number=prev.page_number,
+                        content=merged,
+                        character_count=len(merged),
+                    )
+                else:
+                    chunks.append(
+                        TextChunk(
+                            chunk_index=running_index,
+                            page_number=page.page_number,
+                            content=pending_tail,
+                            character_count=len(pending_tail),
+                        )
+                    )
+                    running_index += 1
+
+        logger.debug("Split %d pages into %d chunks", len(pages), len(chunks))
         return chunks

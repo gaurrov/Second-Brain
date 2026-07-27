@@ -6,7 +6,10 @@ pipeline needs to change.
 """
 from src.core.constants import FileType
 from src.rag.loaders.base_loader import DocumentLoader
+from src.rag.loaders.csv_loader import CSVLoader
 from src.rag.loaders.docx_loader import DOCXLoader
+from src.rag.loaders.html_loader import HTMLLoader
+from src.rag.loaders.markdown_loader import MarkdownLoader
 from src.rag.loaders.pdf_loader import PDFLoader
 from src.rag.loaders.txt_loader import TXTLoader
 
@@ -14,6 +17,9 @@ _LOADERS: dict[FileType, DocumentLoader] = {
     FileType.PDF: PDFLoader(),
     FileType.DOCX: DOCXLoader(),
     FileType.TXT: TXTLoader(),
+    FileType.MARKDOWN: MarkdownLoader(),
+    FileType.HTML: HTMLLoader(),
+    FileType.CSV: CSVLoader(),
 }
 
 

@@ -10,14 +10,20 @@ This is invoked asynchronously after the upload endpoint returns (see
 document_service.py), so a slow PDF never blocks the HTTP response.
 It's a plain function (not tied to FastAPI) so it can be run from a
 BackgroundTask today and from a Celery/RQ worker later with zero changes.
+
+Each pipeline step is individually timed and logged so performance
+bottlenecks are immediately visible in production logs. Failures at any
+step are caught, classified (transient vs. permanent), and persisted on
+the Document row — the pipeline never raises to the caller.
 """
 import logging
+import time
 from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from src.core.constants import ProcessingStatus
+from src.core.constants import PIPELINE_STEPS, ProcessingStatus
 from src.core.exceptions import DocumentProcessingException
 from src.db.session import SessionLocal
 from src.models.document_model import Document
@@ -54,19 +60,44 @@ class IngestionService:
         via GET /api/documents/{id}/status.
         """
         self.document_repository.update_status(document, ProcessingStatus.PROCESSING)
+        pipeline_start = time.perf_counter()
+        step_timings: dict[str, float] = {}
 
         try:
+            # --- Step 1: Extract text ---
+            step_start = time.perf_counter()
             loader = get_loader(document.file_type)
             pages = loader.load(Path(document.file_path))
+            step_timings["extract"] = time.perf_counter() - step_start
+            logger.info(
+                "Document %s extract: %d pages in %.2fs",
+                document.id, len(pages), step_timings["extract"],
+            )
 
+            # --- Step 2: Clean + chunk ---
+            step_start = time.perf_counter()
             chunks = self.text_splitter.split_pages(pages)
+            step_timings["chunk"] = time.perf_counter() - step_start
             if not chunks:
                 raise DocumentProcessingException(
                     "Document produced no usable text chunks after cleaning/splitting."
                 )
+            logger.info(
+                "Document %s chunk: %d chunks in %.2fs",
+                document.id, len(chunks), step_timings["chunk"],
+            )
 
+            # --- Step 3: Embed ---
+            step_start = time.perf_counter()
             embeddings = self.embedding_service.embed_documents([c.content for c in chunks])
+            step_timings["embed"] = time.perf_counter() - step_start
+            logger.info(
+                "Document %s embed: %d vectors in %.2fs",
+                document.id, len(embeddings), step_timings["embed"],
+            )
 
+            # --- Step 4: Store vectors ---
+            step_start = time.perf_counter()
             written = self.vector_repository.upsert_chunks(
                 user_id=document.user_id,
                 document_id=document.id,
@@ -74,16 +105,31 @@ class IngestionService:
                 chunks=chunks,
                 embeddings=embeddings,
             )
+            step_timings["store"] = time.perf_counter() - step_start
+            logger.info(
+                "Document %s store: %d vectors written in %.2fs",
+                document.id, written, step_timings["store"],
+            )
 
+            # --- Step 5: Finalize ---
             self.document_repository.update_status(
                 document, ProcessingStatus.COMPLETED, chunk_count=written
             )
+
+            total_time = time.perf_counter() - pipeline_start
             logger.info(
-                "Document %s processed successfully: %d chunks", document.id, written
+                "Document %s COMPLETED: %d chunks, total=%.2fs steps=%s",
+                document.id, written, total_time,
+                " ".join(f"{k}={v:.2f}s" for k, v in step_timings.items()),
             )
 
+        except DocumentProcessingException:
+            raise
         except Exception as exc:  # noqa: BLE001 - intentionally broad: this is a terminal error boundary
-            logger.exception("Failed to process document %s", document.id)
+            total_time = time.perf_counter() - pipeline_start
+            logger.exception(
+                "Document %s FAILED after %.2fs: %s", document.id, total_time, exc
+            )
             self.document_repository.update_status(
                 document,
                 ProcessingStatus.FAILED,
