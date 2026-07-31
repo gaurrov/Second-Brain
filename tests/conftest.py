@@ -23,6 +23,26 @@ from src.db.base_class import Base
 from src.db.session import get_db
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-live",
+        action="store_true",
+        default=False,
+        help="Run live integration tests (require a real Qdrant server and model weights).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--run-live"):
+        skip_live = pytest.mark.skip(
+            reason="requires --run-live (real Qdrant server + model weights)"
+        )
+        for item in items:
+            if "live" in item.keywords:
+                item.add_marker(skip_live)
+
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(

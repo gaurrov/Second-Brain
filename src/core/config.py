@@ -47,11 +47,18 @@ class Settings(BaseSettings):
     QDRANT_USE_HTTPS: bool = False
     QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION_NAME: str = "documents_kb"
+    # Points per upsert request. Large documents are chunked into batches
+    # of this size so a single request never carries the whole document.
+    QDRANT_UPSERT_BATCH_SIZE: int = 256
 
     # --- Embeddings ---
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
-    EMBEDDING_DIMENSION: int = 384  # must match the model above
+    EMBEDDING_MODEL_NAME: str = "BAAI/bge-base-en-v1.5"
+    EMBEDDING_DIMENSION: int = 768  # must match the model above
     EMBEDDING_BATCH_SIZE: int = 32
+    # Max unique texts held in the text -> vector LRU cache. Bounded so
+    # cached embeddings can't grow unbounded and eat RAM in long-running
+    # workers.
+    EMBEDDING_CACHE_SIZE: int = 4096
 
     # --- Chunking ---
     CHUNK_SIZE: int = 800

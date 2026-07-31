@@ -7,6 +7,9 @@ requires-python = ">=3.11"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "live: opt-in end-to-end tests requiring a real Qdrant server and model weights (pytest --run-live)",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -12,3 +12,4 @@ build/
 .DS_Store
 *.log
 PROJECT_RULES.md
+uploads/

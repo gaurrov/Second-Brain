@@ -163,7 +163,7 @@ POST /api/documents/upload
   -> pages = loader.load(file_path)
   -> chunks = text_splitter.split_pages(pages)   # cleans + splits per page, preserves page_number
   -> embeddings = embedding_service.embed_documents([chunk texts])
-  -> vector_repository.upsert_chunks(...)  # payload: {user_id, document_id, filename, chunk_index, page_number, content}
+  -> vector_repository.upsert_chunks(...)  # payload: {user_id, document_id, filename, chunk_index, page_number, content, timestamp}
   -> document_repository.update_status(COMPLETED, chunk_count=N)  # or FAILED + error_message on any exception
 ```
 
@@ -197,12 +197,26 @@ drop-in change (see `services/ingestion_service.py`).
 
 - **Qdrant** — added to `docker/docker-compose.yml`; collection
   `documents_kb` (configurable) is auto-provisioned on app startup with
-  a Cosine-distance vector config and keyword payload indexes on
-  `user_id` + `document_id`.
-- **Embeddings** — `BAAI/bge-small-en-v1.5` via `sentence-transformers`
-  by default (384-dim; update `EMBEDDING_DIMENSION` in `.env` if you
-  swap models). The model loads once per process (`lru_cache`), not
-  per-request.
+  a Cosine-distance vector config and payload indexes on the filterable
+  fields: `user_id`, `document_id`, `filename` (keyword) and
+  `page_number`, `chunk_index` (integer). `content`/`timestamp` are
+  stored but not indexed.
+- **Embeddings** — `BAAI/bge-base-en-v1.5` via `sentence-transformers`
+  by default (768-dim; update `EMBEDDING_DIMENSION` in `.env` if you
+  swap models). The model loads once per process (module-level
+  `lru_cache`), embeddings are memoized in a bounded LRU cache
+  (`EMBEDDING_CACHE_SIZE`), inputs are deduplicated and encoded in
+  sub-batches of `EMBEDDING_BATCH_SIZE`, and inference is serialized
+  behind a lock so concurrent ingestion tasks don't race on the shared
+  model. Every stored payload carries an ISO-8601 UTC `timestamp`.
+- **Upserts** — `VectorRepository.upsert_chunks` writes points in
+  batches of `QDRANT_UPSERT_BATCH_SIZE` using Qdrant's columnar `Batch`
+  form (parallel ids/vectors/payloads) to keep peak memory flat for
+  large documents.
+- **Retrieval** — `VectorRepository.search` runs cosine-similarity
+  search always filtered by `user_id` (with optional `document_id` /
+  `page_number` / `score_threshold` narrowing) and returns typed
+  `SearchResult` objects.
 - New env vars: `UPLOAD_DIR`, `MAX_UPLOAD_SIZE_MB`, `QDRANT_*`,
   `EMBEDDING_*`, `CHUNK_SIZE`, `CHUNK_OVERLAP` — see `.env.example`.
 - Migration `0002_create_documents_table.py` adds the `documents` table.
@@ -217,10 +231,31 @@ run fast and don't require a live Qdrant instance or downloading model
 weights — they verify the API/service/repository wiring and isolation
 guarantees, not raw ML inference quality.
 
+`tests/test_embedding_service.py` unit-tests `EmbeddingService` with an
+injected fake model: deduplication, LRU caching/eviction, sub-batch
+splitting, the query-instruction prefix, and singleton model loading.
+
+`tests/test_vector_repository.py` is a real integration suite that runs
+against an in-process Qdrant (`QdrantClient(":memory:")`) — no Docker
+needed. It verifies collection provisioning, batch upserts, the full
+payload contract (including `timestamp`), delete/count scoping, and
+search ordering/limits/filters/score-thresholds, plus the multi-user
+isolation guarantees.
+
+For end-to-end verification against a real Qdrant server and real model
+weights (skipped by default):
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+pytest --run-live tests/test_live_integration.py
+```
+
 ## 6. Still on the horizon
 
-- RAG retrieval + Groq LLM generation (conversations/messages flow,
-  `rag_service.py`, `llm_service.py`, `rag/chains/`)
+- RAG chat orchestration + Groq LLM generation (conversations/messages
+  flow, `rag_service.py`, `llm_service.py`, `rag/chains/`). Vector
+  retrieval itself is implemented (`VectorRepository.search`); what
+  remains is the chain that turns retrieved chunks into an answer.
 - Reranking of retrieved chunks
 - Promoting `BackgroundTasks` to Celery/RQ for production-grade async
   processing (the ingestion pipeline is already shaped for this)
