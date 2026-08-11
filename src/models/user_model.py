@@ -17,6 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from src.models.conversation_model import Conversation
     from src.models.document_model import Document
     from src.models.refresh_token_model import RefreshToken
 
@@ -34,6 +35,7 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     documents: Mapped[list["Document"]] = relationship(back_populates="user")
+    conversations: Mapped[list["Conversation"]] = relationship(back_populates="user")
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",

@@ -23,6 +23,14 @@ class ProcessingStatus(str, Enum):
     FAILED = "failed"
 
 
+class MessageRole(str, Enum):
+    """Role of a chat message within a conversation."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 # Maps an accepted file extension to its FileType, and doubles as the
 # allow-list for upload validation — any extension not in this dict is
 # rejected outright.

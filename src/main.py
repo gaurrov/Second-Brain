@@ -25,12 +25,15 @@ from src.api.v1.router import api_router
 from src.core.config import settings
 from src.core.exceptions import (
     AppException,
+    ConversationNotFoundException,
     DocumentNotFoundException,
     EmptyFileException,
     FileTooLargeException,
     InactiveUserException,
     InvalidCredentialsException,
     InvalidTokenException,
+    LLMException,
+    PromptInjectionException,
     TokenExpiredException,
     UnsupportedFileTypeException,
     UserAlreadyExistsException,
@@ -155,6 +158,21 @@ def _register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(DocumentNotFoundException)
     async def document_not_found_handler(request: Request, exc: DocumentNotFoundException):
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.message})
+
+    @app.exception_handler(ConversationNotFoundException)
+    async def conversation_not_found_handler(request: Request, exc: ConversationNotFoundException):
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": exc.message})
+
+    @app.exception_handler(PromptInjectionException)
+    async def prompt_injection_handler(request: Request, exc: PromptInjectionException):
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": exc.message})
+
+    @app.exception_handler(LLMException)
+    async def llm_exception_handler(request: Request, exc: LLMException):
+        logger.warning("LLM generation failed: %s", exc.message)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": exc.message}
+        )
 
     @app.exception_handler(UnsupportedFileTypeException)
     async def unsupported_file_type_handler(request: Request, exc: UnsupportedFileTypeException):

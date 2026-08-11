@@ -64,6 +64,40 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 120
 
+    # --- Groq (LLM generation) ---
+    GROQ_API_KEY: str | None = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MAX_TOKENS: int = 1024
+    GROQ_TEMPERATURE: float = 0.2
+    GROQ_TIMEOUT_SECONDS: int = 60
+
+    # --- RAG retrieval ---
+    # How many most-similar chunks to consider for answer generation.
+    RETRIEVAL_TOP_K: int = 8
+    # Cosine-similarity floor for a chunk to be considered relevant.
+    # Chunks scoring below this are treated as "not about the question",
+    # which drives the polite-refusal path instead of hallucination.
+    RETRIEVAL_SCORE_THRESHOLD: float = 0.30
+    # Optional cross-encoder reranking of retrieved chunks.
+    RERANK_ENABLED: bool = False
+    RERANK_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    RERANK_TOP_K: int = 4
+
+    # --- Context compression ---
+    # Max characters of retrieved context allowed in a prompt. Larger
+    # contexts are truncated to the highest-scoring chunks within budget.
+    CONTEXT_MAX_CHARACTERS: int = 6000
+    # Similarity ratio above which two chunks are considered duplicates
+    # and the later one is dropped during compression.
+    CONTEXT_DEDUPE_THRESHOLD: float = 0.95
+
+    # --- Conversations ---
+    # Max recent messages included in a prompt as chat history.
+    CONVERSATION_HISTORY_LIMIT: int = 8
+    # Hard cap on question length (schema enforces this; the service
+    # clamps as defense-in-depth).
+    MAX_QUESTION_LENGTH: int = 2000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

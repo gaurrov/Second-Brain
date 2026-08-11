@@ -17,12 +17,16 @@ from src.core.exceptions import InactiveUserException, InvalidTokenException
 from src.core.security import TokenType, decode_token
 from src.db.session import get_db
 from src.models.user_model import User
+from src.repositories.conversation_repository import ConversationRepository
 from src.repositories.document_repository import DocumentRepository
+from src.repositories.message_repository import MessageRepository
 from src.repositories.refresh_token_repository import RefreshTokenRepository
 from src.repositories.user_repository import UserRepository
 from src.services.auth_service import AuthService
+from src.services.conversation_service import ConversationService
 from src.services.document_service import DocumentService
 from src.services.ingestion_service import process_document_task
+from src.services.rag_service import RAGService, build_rag_service
 
 # tokenUrl is documentation-only here (points Swagger's "Authorize" button
 # at the login endpoint); the actual login route returns JSON, not an
@@ -98,3 +102,23 @@ def get_document_service(
         db=db,
         dispatch_processing=dispatch_processing,
     )
+
+
+def get_conversation_repository(db: Session = Depends(get_db)) -> ConversationRepository:
+    return ConversationRepository(db)
+
+
+def get_message_repository(db: Session = Depends(get_db)) -> MessageRepository:
+    return MessageRepository(db)
+
+
+def get_conversation_service(
+    conversation_repository: ConversationRepository = Depends(get_conversation_repository),
+    message_repository: MessageRepository = Depends(get_message_repository),
+) -> ConversationService:
+    return ConversationService(conversation_repository, message_repository)
+
+
+def get_rag_service(db: Session = Depends(get_db)) -> RAGService:
+    """Wire the full RAG pipeline for the request's DB session."""
+    return build_rag_service(db)

@@ -11,7 +11,8 @@ from src.models.base import Base  # noqa: F401
 from src.models.user_model import User  # noqa: F401
 from src.models.document_model import Document  # noqa: F401
 from src.models.refresh_token_model import RefreshToken  # noqa: F401
+from src.models.conversation_model import Conversation  # noqa: F401
+from src.models.message_model import Message  # noqa: F401
 
 # Future models get imported here, e.g.:
-# from src.models.conversation_model import Conversation  # noqa: F401
-# from src.models.message_model import Message  # noqa: F401
+# from src.models.rating_model import Rating  # noqa: F401

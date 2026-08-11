@@ -78,3 +78,28 @@ class DocumentProcessingException(AppException):
 class TextExtractionException(AppException):
     def __init__(self, message: str = "Could not extract text from the document."):
         super().__init__(message)
+
+
+# --------------------------------------------------------------------------
+# RAG / conversation module exceptions
+# --------------------------------------------------------------------------
+class ConversationNotFoundException(AppException):
+    def __init__(self, message: str = "Conversation not found."):
+        super().__init__(message)
+
+
+class PromptInjectionException(AppException):
+    def __init__(
+        self,
+        message: str = (
+            "Your question contains prompt-injection patterns and was not processed. "
+            "Please rephrase it without instructing the system to ignore rules, "
+            "reveal prompts, or change its behavior."
+        ),
+    ):
+        super().__init__(message)
+
+
+class LLMException(AppException):
+    def __init__(self, message: str = "The language model could not generate a response."):
+        super().__init__(message)
