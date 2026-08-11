@@ -155,6 +155,9 @@ class RAGService:
             top_k=self.rerank_top_k if self.rerank_enabled else self.top_k,
         )
 
+        # 4b. Scan retrieved context for injection (uploads are untrusted).
+        self._scan_context_for_injection(results, user_id)
+
         # 5. Compress the context into a character budget.
         compressed = self.compressor.compress(results)
 
@@ -250,6 +253,35 @@ class RAGService:
             HistoryItem(role=message.role.value, content=message.content)
             for message in messages
         ]
+
+    def _scan_context_for_injection(self, results: Sequence, user_id: uuid.UUID) -> None:
+        """Log any injection patterns found inside retrieved chunks.
+
+        Uploaded documents are untrusted input, so retrieved context is
+        scanned for the same directive patterns that would reject a user
+        question. The prompt-level defenses (system prompt + `<context>`
+        delimiters built by PromptBuilder) remain the primary layer; this
+        scan exists so an injected document is flagged in the audit trail
+        instead of silently relying on the model's behavior.
+
+        Chunks are NOT dropped here: the patterns are high-precision but
+        a legitimate document discussing prompt injection legitimately
+        contains them, and dropping would silently corrupt retrieval.
+        """
+        for result in results:
+            match = self.guard.scan(result.content)
+            if match is None:
+                continue
+            logger.warning(
+                "Context injection pattern detected in retrieved chunk "
+                "user=%s document_id=%s filename=%s pattern=%s severity=%s matched=%r",
+                user_id,
+                result.document_id,
+                result.filename,
+                match.pattern_key,
+                match.severity.value,
+                match.matched_text,
+            )
 
     @staticmethod
     def _to_source_ref(chunk) -> SourceRef:
