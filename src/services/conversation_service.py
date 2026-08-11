@@ -32,6 +32,20 @@ class ConversationService:
             raise ConversationNotFoundException()
         return conversation
 
+    def get_conversation_detail(
+        self,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[Conversation, list[Message]]:
+        """Fetch a conversation with its messages, ownership-checked."""
+        conversation = self.get_conversation(conversation_id, user_id)
+        messages = self.message_repository.list_for_conversation(
+            conversation_id, user_id, limit=limit, offset=offset
+        )
+        return conversation, messages
+
     def list_conversations(
         self, user_id: uuid.UUID, limit: int = 50, offset: int = 0
     ) -> tuple[list[Conversation], int]:

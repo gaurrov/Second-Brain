@@ -6,6 +6,15 @@ scoped to `current_user.id` — a user can only ever ask questions against
 their own knowledge base and read/delete their own conversations. Thin
 controllers only: validation and orchestration live in RAGService /
 ConversationService.
+
+STREAMING SEAM: `POST /chat` currently returns the full `ChatResponse`
+after the whole answer is generated. A future streaming mode will add an
+SSE/JSON-stream variant of this route that streams tokens as they are
+produced. The contract that makes that swap safe is already in place:
+RAGService.answer() returns the complete `RAGResult` (answer + message
+ids + sources) which the streaming route would reuse verbatim once the
+LLM finishes — the response schema, message ids, and persisted
+retrieval_metadata do not change between streaming and non-streaming.
 """
 from uuid import UUID
 
@@ -19,6 +28,7 @@ from src.api.deps import (
 from src.api.v1.schemas.chat_schema import (
     ChatRequest,
     ChatResponse,
+    ConversationDetailResponse,
     ConversationListResponse,
     ConversationResponse,
     MessageListResponse,
@@ -84,6 +94,30 @@ def list_conversations(
     return ConversationListResponse(
         total=total,
         conversations=[ConversationResponse.model_validate(c) for c in conversations],
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}",
+    response_model=ConversationDetailResponse,
+    summary="Get one of the current user's conversations with its messages",
+)
+def get_conversation(
+    conversation_id: UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationDetailResponse:
+    conversation, messages = conversation_service.get_conversation_detail(
+        conversation_id, user_id=current_user.id, limit=limit, offset=offset
+    )
+    return ConversationDetailResponse(
+        id=conversation.id,
+        title=conversation.title,
+        created_at=conversation.created_at,
+        updated_at=conversation.updated_at,
+        messages=[MessageResponse.model_validate(m) for m in messages],
     )
 
 

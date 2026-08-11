@@ -124,6 +124,40 @@ class TestMessageRepository:
         assert message_repo.count_for_conversation(shared_conv.id, user_a) == 1
         assert message_repo.count_for_conversation(shared_conv.id, user_b) == 0
 
+    def test_retrieval_metadata_round_trip(self, conversation_repo, message_repo):
+        user_id = uuid.uuid4()
+        conversation = _create_conversation(conversation_repo, user_id)
+        metadata = [
+            {
+                "document_id": str(uuid.uuid4()),
+                "filename": "a.txt",
+                "page_number": 2,
+                "chunk_index": 0,
+                "score": 0.93,
+                "snippet": "some snippet",
+            }
+        ]
+        _create_message(
+            message_repo,
+            conversation.id,
+            user_id,
+            MessageRole.USER,
+            "A question",
+        )
+        message_repo.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content="An answer",
+                retrieval_metadata=metadata,
+            )
+        )
+
+        messages = message_repo.list_for_conversation(conversation.id, user_id, limit=10)
+        assert messages[0].retrieval_metadata is None  # user turn
+        assert messages[1].retrieval_metadata == metadata  # assistant turn
+
     def test_deleting_conversation_cascades_to_messages(
         self, conversation_repo, message_repo
     ):

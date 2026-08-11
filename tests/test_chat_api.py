@@ -228,3 +228,72 @@ class TestConversationEndpoints:
             ).status_code
             == 404
         )
+
+    def test_get_conversation_detail_includes_messages(self, client, db_session):
+        headers = _register_and_login(client)
+        user_id = _user_id(db_session, "jane@example.com")
+        conversation = _seed_conversation(db_session, user_id, title="Detail", message_count=2)
+
+        response = client.get(f"{API_PREFIX}/conversations/{conversation.id}", headers=headers)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["title"] == "Detail"
+        assert len(body["messages"]) == 2
+        assert [m["content"] for m in body["messages"]] == ["message-0", "message-1"]
+
+    def test_get_conversation_detail_cross_user_forbidden(self, client, db_session):
+        headers_a = _register_and_login(client, email="a@example.com", username="user_a")
+        headers_b = _register_and_login(client, email="b@example.com", username="user_b")
+        user_a = _user_id(db_session, "a@example.com")
+        conversation = _seed_conversation(db_session, user_a, message_count=1)
+
+        response = client.get(f"{API_PREFIX}/conversations/{conversation.id}", headers=headers_b)
+        assert response.status_code == 404
+
+        # The owner can still read it.
+        assert client.get(
+            f"{API_PREFIX}/conversations/{conversation.id}", headers=headers_a
+        ).status_code == 200
+
+    def test_get_nonexistent_conversation_detail_404(self, client, db_session):
+        headers = _register_and_login(client)
+        response = client.get(
+            f"{API_PREFIX}/conversations/00000000-0000-0000-0000-000000000000",
+            headers=headers,
+        )
+        assert response.status_code == 404
+
+    def test_get_conversation_detail_exposes_retrieval_metadata(self, client, db_session):
+        headers = _register_and_login(client)
+        user_id = _user_id(db_session, "jane@example.com")
+        conversation = _seed_conversation(db_session, user_id, title="Meta")
+        MessageRepository(db_session).create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content="Answer.",
+                retrieval_metadata=[
+                    {
+                        "document_id": str(uuid.uuid4()),
+                        "filename": "doc.txt",
+                        "page_number": 3,
+                        "chunk_index": 1,
+                        "score": 0.91,
+                        "snippet": "snippet text",
+                    }
+                ],
+            )
+        )
+
+        response = client.get(f"{API_PREFIX}/conversations/{conversation.id}", headers=headers)
+
+        assert response.status_code == 200
+        message = response.json()["messages"][0]
+        assert message["role"] == "assistant"
+        assert message["content"] == "Answer."
+        assert message["retrieval_metadata"][0]["filename"] == "doc.txt"
+        assert message["retrieval_metadata"][0]["page_number"] == 3
+        assert message["retrieval_metadata"][0]["chunk_index"] == 1
+        assert message["retrieval_metadata"][0]["score"] == 0.91

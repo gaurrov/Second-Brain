@@ -226,6 +226,18 @@ class TestAnswerGeneration:
         assert messages[0].content == texts[1]
         assert messages[1].content == "Generated answer."
 
+        # Retrieval provenance (documents + scores) is persisted on the
+        # assistant message; user questions carry none.
+        assert messages[0].retrieval_metadata is None
+        meta = messages[1].retrieval_metadata
+        assert len(meta) == 1
+        assert meta[0]["document_id"] == str(document_id)
+        assert meta[0]["filename"] == "runbook.txt"
+        assert meta[0]["page_number"] == 1
+        assert meta[0]["chunk_index"] == 0
+        assert meta[0]["snippet"] == texts[0]
+        assert isinstance(meta[0]["score"], float)
+
     def test_query_embedding_and_user_scoped_search(self, db, vector_repo):
         user_a, user_b, doc_a, doc_b, embedder = _seed_two_users(vector_repo)
         llm = FakeLLM()
@@ -298,6 +310,7 @@ class TestInsufficientContext:
         messages = MessageRepository(db).list_for_conversation(conversations[0].id, user_id, limit=10)
         assert [m.role.value for m in messages] == ["user", "assistant"]
         assert messages[1].content == INSUFFICIENT_CONTEXT_RESPONSE
+        assert messages[1].retrieval_metadata is None  # nothing was retrieved
 
 
 class TestConversationFlow:

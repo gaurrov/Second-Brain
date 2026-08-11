@@ -72,8 +72,19 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: datetime
+    retrieval_metadata: list[SourceRefSchema] | None = None
 
 
 class MessageListResponse(BaseModel):
     total: int
+    messages: list[MessageResponse]
+
+
+class ConversationDetailResponse(BaseModel):
+    """A single conversation plus its messages (the GET /conversation/{id} view)."""
+
+    id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
     messages: list[MessageResponse]

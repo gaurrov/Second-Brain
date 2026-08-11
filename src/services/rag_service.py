@@ -199,6 +199,7 @@ class RAGService:
                 user_id=user_id,
                 role=MessageRole.ASSISTANT,
                 content=answer,
+                retrieval_metadata=self._serialize_sources(sources),
             )
         )
 
@@ -293,6 +294,23 @@ class RAGService:
             score=chunk.score,
             snippet=chunk.content[:500],
         )
+
+    @staticmethod
+    def _serialize_sources(sources: Sequence[SourceRef]) -> list[dict] | None:
+        """Persistable JSON form of the retrieval provenance for a message."""
+        if not sources:
+            return None
+        return [
+            {
+                "document_id": source.document_id,
+                "filename": source.filename,
+                "page_number": source.page_number,
+                "chunk_index": source.chunk_index,
+                "score": source.score,
+                "snippet": source.snippet,
+            }
+            for source in sources
+        ]
 
 
 def build_rag_service(db) -> RAGService:

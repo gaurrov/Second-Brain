@@ -9,6 +9,11 @@ access structurally impossible even if a caller somehow obtains another
 user's conversation_id: a message query that filters `conversation_id`
 without also matching the caller's `user_id` returns nothing.
 
+`retrieval_metadata` persists the provenance of an assistant answer: the
+retrieved documents, chunk references, scores and snippets that produced
+it. It is stored as JSON on the assistant message (None for user turns)
+so the audit trail survives independently of the vector store.
+
 `created_at` is given a Python-side default (microsecond precision) in
 addition to the server default so that the message ordering used for chat
 history is correct even on SQLite, whose CURRENT_TIMESTAMP only has
@@ -18,7 +23,7 @@ timestamp.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime
+from sqlalchemy import JSON, DateTime
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import ForeignKey, Index, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -58,6 +63,7 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    retrieval_metadata: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
