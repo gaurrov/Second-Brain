@@ -86,5 +86,11 @@ def _disable_real_qdrant(monkeypatch):
     import src.vectorstore.collection_manager as collection_manager_module
     import src.vectorstore.qdrant_client as qdrant_client_module
 
-    monkeypatch.setattr(qdrant_client_module, "get_qdrant_client", lambda: None)
+    from functools import lru_cache
+
+    # Keep the lru_cache wrapper so shutdown paths that inspect it
+    # (cache_info/cache_clear) keep working under test.
+    monkeypatch.setattr(
+        qdrant_client_module, "get_qdrant_client", lru_cache(maxsize=1)(lambda: None)
+    )
     monkeypatch.setattr(collection_manager_module, "ensure_collection", lambda client: None)

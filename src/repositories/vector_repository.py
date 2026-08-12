@@ -24,9 +24,32 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
 from src.core.config import settings
+from src.core.metrics import (
+    vector_operation_duration_seconds,
+    vector_operations_total,
+    vector_points_upserted_total,
+)
 from src.rag.splitters.text_splitter import TextChunk
+from src.utils.retry import retry
 
 logger = logging.getLogger("second_brain.vector_repository")
+
+
+def _is_retryable_qdrant_error(exc: BaseException) -> bool:
+    """Transient Qdrant failures (transport + 5xx) are retried; 4xx are not."""
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError, BrokenPipeError)):
+        return True
+    try:
+        from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+
+        if isinstance(exc, ResponseHandlingException):
+            return True
+        if isinstance(exc, UnexpectedResponse):
+            code = getattr(exc, "status_code", None)
+            return code is None or code >= 500
+    except ImportError:
+        pass
+    return False
 
 
 @dataclass(frozen=True)
@@ -54,6 +77,7 @@ class VectorRepository:
         self.client = client
         self.collection_name = collection_name or settings.QDRANT_COLLECTION_NAME
 
+    @retry(target="qdrant", retry_on=_is_retryable_qdrant_error)
     def upsert_chunks(
         self,
         user_id: uuid.UUID,
@@ -101,17 +125,24 @@ class VectorRepository:
 
         batch_size = max(settings.QDRANT_UPSERT_BATCH_SIZE, 1)
         written = 0
-        for start in range(0, len(chunks), batch_size):
-            end = min(start + batch_size, len(chunks))
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=qmodels.Batch(
-                    ids=point_ids[start:end],
-                    vectors=embeddings[start:end],
-                    payloads=payloads[start:end],
-                ),
-            )
-            written += end - start
+        try:
+            with vector_operation_duration_seconds.labels(operation="upsert").time():
+                for start in range(0, len(chunks), batch_size):
+                    end = min(start + batch_size, len(chunks))
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=qmodels.Batch(
+                            ids=point_ids[start:end],
+                            vectors=embeddings[start:end],
+                            payloads=payloads[start:end],
+                        ),
+                    )
+                    written += end - start
+        except Exception:
+            vector_operations_total.labels(operation="upsert", outcome="error").inc()
+            raise
+        vector_operations_total.labels(operation="upsert", outcome="success").inc()
+        vector_points_upserted_total.labels(operation="upsert").inc(written)
 
         logger.debug(
             "Upserted %d vectors for document=%s user=%s",
@@ -119,6 +150,7 @@ class VectorRepository:
         )
         return written
 
+    @retry(target="qdrant", retry_on=_is_retryable_qdrant_error)
     def search(
         self,
         query_vector: list[float],
@@ -155,17 +187,24 @@ class VectorRepository:
                 )
             )
 
-        response = self.client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            query_filter=qmodels.Filter(must=conditions),
-            limit=limit,
-            score_threshold=score_threshold,
-            with_payload=True,
-            with_vectors=False,
-        )
+        try:
+            with vector_operation_duration_seconds.labels(operation="search").time():
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    query_filter=qmodels.Filter(must=conditions),
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+        except Exception:
+            vector_operations_total.labels(operation="search", outcome="error").inc()
+            raise
+        vector_operations_total.labels(operation="search", outcome="success").inc()
         return [self._to_search_result(point) for point in response.points]
 
+    @retry(target="qdrant", retry_on=_is_retryable_qdrant_error)
     def delete_by_document(self, document_id: uuid.UUID, user_id: uuid.UUID) -> None:
         """
         Delete every vector belonging to a document. Filtered by BOTH
@@ -173,40 +212,53 @@ class VectorRepository:
         hold of another user's document_id cannot delete those vectors
         without also matching that user's own user_id.
         """
-        self.client.delete(
-            collection_name=self.collection_name,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="document_id", match=qmodels.MatchValue(value=str(document_id))
-                        ),
-                        qmodels.FieldCondition(
-                            key="user_id", match=qmodels.MatchValue(value=str(user_id))
-                        ),
-                    ]
+        try:
+            with vector_operation_duration_seconds.labels(operation="delete").time():
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=qmodels.FilterSelector(
+                        filter=qmodels.Filter(
+                            must=[
+                                qmodels.FieldCondition(
+                                    key="document_id", match=qmodels.MatchValue(value=str(document_id))
+                                ),
+                                qmodels.FieldCondition(
+                                    key="user_id", match=qmodels.MatchValue(value=str(user_id))
+                                ),
+                            ]
+                        )
+                    ),
                 )
-            ),
-        )
+        except Exception:
+            vector_operations_total.labels(operation="delete", outcome="error").inc()
+            raise
+        vector_operations_total.labels(operation="delete", outcome="success").inc()
         logger.debug(
             "Deleted vectors for document=%s user=%s", document_id, user_id
         )
 
+    @retry(target="qdrant", retry_on=_is_retryable_qdrant_error)
     def count_by_document(self, document_id: uuid.UUID, user_id: uuid.UUID) -> int:
         """Number of stored chunks for a document (scoped by user)."""
-        result = self.client.count(
-            collection_name=self.collection_name,
-            count_filter=qmodels.Filter(
-                must=[
-                    qmodels.FieldCondition(
-                        key="document_id", match=qmodels.MatchValue(value=str(document_id))
+        try:
+            with vector_operation_duration_seconds.labels(operation="count").time():
+                result = self.client.count(
+                    collection_name=self.collection_name,
+                    count_filter=qmodels.Filter(
+                        must=[
+                            qmodels.FieldCondition(
+                                key="document_id", match=qmodels.MatchValue(value=str(document_id))
+                            ),
+                            qmodels.FieldCondition(
+                                key="user_id", match=qmodels.MatchValue(value=str(user_id))
+                            ),
+                        ]
                     ),
-                    qmodels.FieldCondition(
-                        key="user_id", match=qmodels.MatchValue(value=str(user_id))
-                    ),
-                ]
-            ),
-        )
+                )
+        except Exception:
+            vector_operations_total.labels(operation="count", outcome="error").inc()
+            raise
+        vector_operations_total.labels(operation="count", outcome="success").inc()
         return result.count
 
     @staticmethod

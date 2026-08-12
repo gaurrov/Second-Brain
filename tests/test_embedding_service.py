@@ -136,7 +136,7 @@ class TestSingletonModel:
     def test_model_loaded_once_per_process(self, monkeypatch):
         constructed: list[str] = []
 
-        def fake_factory(model_name: str):
+        def fake_factory(model_name: str, **kwargs):
             constructed.append(model_name)
             return _FakeModel()
 
@@ -148,7 +148,7 @@ class TestSingletonModel:
         assert constructed == [settings.EMBEDDING_MODEL_NAME]
 
     def test_clear_model_cache_reloads(self, monkeypatch):
-        def fake_factory(model_name: str):
+        def fake_factory(model_name: str, **kwargs):
             return _FakeModel()
 
         monkeypatch.setattr(embedding_module, "SentenceTransformer", fake_factory)

@@ -10,7 +10,7 @@ in the Qdrant point payload.
 import uuid
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,10 @@ from src.models.user_model import User
 
 class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "documents"
+    __table_args__ = (
+        # Speeds up list_for_user (WHERE user_id=? ORDER BY created_at DESC).
+        Index("ix_documents_user_id_created_at", "user_id", "created_at"),
+    )
 
     # Ownership — the cornerstone of per-user isolation for this table.
     # Every repository query against `documents` must filter on this.

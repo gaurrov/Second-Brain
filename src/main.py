@@ -2,27 +2,32 @@
 FastAPI application entrypoint.
 
 Responsibilities of this module ONLY:
+  - configure structured logging
   - instantiate the FastAPI app
-  - register middleware (CORS, request logging, etc.)
+  - register middleware (CORS, request ID + access logs, metrics, rate limit)
   - register global exception handlers (domain exceptions -> HTTP responses)
   - mount the versioned API router
-  - expose a lightweight health check
+  - expose health (liveness + readiness) and Prometheus metrics endpoints
+  - own the application lifecycle (startup/shutdown of connections, pools)
 
 No business logic, no route handlers, and no DB queries belong here.
 """
+import asyncio
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.v1.router import api_router
 from src.core.config import settings
+from src.core.context import reset_request_id, set_request_id
 from src.core.exceptions import (
     AppException,
     ConversationNotFoundException,
@@ -39,31 +44,96 @@ from src.core.exceptions import (
     UserAlreadyExistsException,
     UserNotFoundException,
 )
+from src.core.health import get_health_checker
+from src.core.logging import setup_logging
+from src.core.metrics import http_requests_in_flight, metrics_payload, normalize_path, record_request
+from src.core.rate_limiter import get_rate_limiter
 
-logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+setup_logging()
 logger = logging.getLogger("second_brain")
+
+_RATE_LIMIT_EXEMPT_PATHS = {"/health", "/health/live", "/health/ready", "/metrics", "/docs", "/redoc", "/openapi.json"}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup and shutdown lifecycle."""
+    logger.info(
+        "Starting %s (env=%s log_format=%s)",
+        settings.APP_NAME, settings.APP_ENV, settings.LOG_FORMAT,
+    )
     Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
+    # --- Startup: warm shared infrastructure (never fatal) ---
+    await _init_qdrant_collection()
+
+    if settings.REDIS_ENABLED:
+        from src.core.redis_client import get_redis
+
+        get_redis()  # construct the pool now; failures surface on first use
+
+    if settings.TASK_WORKER == "pool":
+        from src.workers.pool import get_worker_pool
+
+        get_worker_pool().start()
+
+    if settings.STARTUP_WARMUP:
+        _start_model_warmup()
+
+    yield
+
+    # --- Shutdown: drain work, then close connections ---
+    logger.info("Shutting down %s", settings.APP_NAME)
+    if settings.TASK_WORKER == "pool":
+        from src.workers.pool import stop_worker_pool
+
+        stop_worker_pool()
+
+    if settings.REDIS_ENABLED:
+        from src.core.redis_client import close_redis
+
+        close_redis()
+
+    from src.db.session import dispose_engine
+    from src.vectorstore.qdrant_client import close_qdrant_client
+
+    dispose_engine()
+    close_qdrant_client()
+    logger.info("Shutdown complete")
+
+
+async def _init_qdrant_collection() -> None:
+    """Best-effort collection provisioning, bounded by a startup timeout."""
     try:
         from src.vectorstore.collection_manager import ensure_collection
         from src.vectorstore.qdrant_client import get_qdrant_client
 
-        ensure_collection(get_qdrant_client())
-    except Exception as exc:
-        # Don't crash app startup if Qdrant isn't reachable yet (e.g.
-        # local dev before `docker compose up`); ingestion calls will
-        # surface a clear error instead when a document is uploaded.
+        await asyncio.wait_for(
+            asyncio.to_thread(ensure_collection, get_qdrant_client()),
+            timeout=settings.STARTUP_QDRANT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Qdrant collection provisioning timed out after %.1fs; "
+            "ingestion will surface a clear error instead.",
+            settings.STARTUP_QDRANT_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 - don't crash startup if Qdrant is down
         logger.warning("Could not initialize Qdrant collection on startup: %s", exc)
 
-    yield
+
+def _start_model_warmup() -> None:
+    """Preload the embedding model in a background thread (STARTUP_WARMUP)."""
+    def _load() -> None:
+        try:
+            from src.services.embedding_service import _get_model
+
+            _get_model()
+            logger.info("Embedding model preloaded (STARTUP_WARMUP)")
+        except Exception:  # noqa: BLE001 - warmup is best-effort
+            logger.warning("Embedding model preload failed", exc_info=True)
+
+    threading.Thread(target=_load, name="sb-warmup", daemon=True).start()
 
 
 def create_application() -> FastAPI:
@@ -79,11 +149,95 @@ def create_application() -> FastAPI:
     _register_middleware(app)
     _register_exception_handlers(app)
     _register_routers(app)
+    _register_health_and_metrics(app)
 
     return app
 
 
 def _register_middleware(app: FastAPI) -> None:
+    """
+    Middleware order (outermost -> innermost):
+        CORS -> request ID/access log -> metrics -> rate limit -> routes
+
+    Note: `add_middleware` prepends, so registration below is written in
+    reverse (rate limit first, CORS last).
+    """
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        if not settings.RATE_LIMIT_ENABLED or request.method == "OPTIONS":
+            return await call_next(request)
+        path = request.url.path
+        if path in _RATE_LIMIT_EXEMPT_PATHS:
+            return await call_next(request)
+
+        client_id = _client_identity(request)
+        is_login = path.startswith(f"{settings.API_V1_PREFIX}/auth/")
+        if not get_rate_limiter().check(client_id, login=is_login):
+            retry_after = (
+                settings.RATE_LIMIT_LOGIN_WINDOW_SECONDS if is_login
+                else settings.RATE_LIMIT_DEFAULT_WINDOW_SECONDS
+            )
+            logger.warning(
+                "Rate limit exceeded for client=%s path=%s", client_id, path,
+                extra={"client": client_id, "path": path},
+            )
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Too many requests. Please slow down and try again."},
+                headers={"Retry-After": str(retry_after)},
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        if not settings.METRICS_ENABLED:
+            return await call_next(request)
+        method = request.method
+        label_path = normalize_path(request.url.path)
+        http_requests_in_flight.labels(method=method, path=label_path).inc()
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            record_request(method, request.url.path, 500, time.perf_counter() - start)
+            raise
+        finally:
+            http_requests_in_flight.labels(method=method, path=label_path).dec()
+        record_request(method, request.url.path, response.status_code, time.perf_counter() - start)
+        return response
+
+    @app.middleware("http")
+    async def request_context_middleware(request: Request, call_next):
+        """
+        Attaches a correlation/request ID to every request for tracing
+        across logs (structured JSON with `request_id`), honors an
+        incoming header when PROPAGATE_REQUEST_ID is set, and logs basic
+        timing/status information for every request.
+        """
+        request_id = _resolve_request_id(request)
+        token = set_request_id(request_id)
+        start_time = time.perf_counter()
+        status_code = 500
+        response: Response | None = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            reset_request_id(token)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            if response is not None:
+                response.headers[settings.REQUEST_ID_HEADER] = request_id
+            logger.info(
+                "request",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": status_code,
+                    "duration_ms": round(duration_ms, 2),
+                },
+            )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
@@ -92,28 +246,24 @@ def _register_middleware(app: FastAPI) -> None:
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
-    async def request_context_middleware(request: Request, call_next):
-        """
-        Attaches a correlation/request ID to every request for tracing
-        across logs, and logs basic timing/status information.
-        """
-        request_id = str(uuid4())
-        start_time = time.perf_counter()
 
-        response = await call_next(request)
+def _resolve_request_id(request: Request) -> str:
+    if settings.PROPAGATE_REQUEST_ID:
+        incoming = request.headers.get(settings.REQUEST_ID_HEADER)
+        if incoming and incoming.strip() and len(incoming) <= 128:
+            return incoming.strip()
+    return str(uuid4())
 
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        response.headers["X-Request-ID"] = request_id
-        logger.info(
-            "request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
-            request_id,
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
-        return response
+
+def _client_identity(request: Request) -> str:
+    """Best-effort client identity for rate limiting."""
+    for header_name in settings.RATE_LIMIT_TRUSTED_HEADERS:
+        value = request.headers.get(header_name)
+        if value:
+            return value.split(",", 1)[0].strip()
+    if request.client is not None:
+        return request.client.host
+    return "unknown"
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
@@ -201,9 +351,29 @@ def _register_exception_handlers(app: FastAPI) -> None:
 def _register_routers(app: FastAPI) -> None:
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-    @app.get("/health", tags=["Health"], summary="Liveness/readiness check")
-    def health_check():
-        return {"status": "ok", "app": settings.APP_NAME, "env": settings.APP_ENV}
+
+def _register_health_and_metrics(app: FastAPI) -> None:
+    checker = get_health_checker()
+
+    @app.get("/health", tags=["Health"], summary="Liveness check")
+    def health_check() -> dict:
+        return checker.check_live()
+
+    @app.get("/health/live", tags=["Health"], summary="Liveness check")
+    def health_live() -> dict:
+        return checker.check_live()
+
+    @app.get("/health/ready", tags=["Health"], summary="Readiness check (DB, Qdrant, Redis)")
+    def health_ready(response: Response) -> dict:
+        report, ready = checker.check_ready()
+        if not ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return report
+
+    @app.get(settings.METRICS_PATH, tags=["Observability"], summary="Prometheus metrics", include_in_schema=False)
+    def metrics() -> Response:
+        content_type, body = metrics_payload()
+        return Response(content=body, media_type=content_type)
 
 
 app = create_application()

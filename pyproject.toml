@@ -5,6 +5,8 @@ description = "Backend for a multi-user Personal Knowledge Management (Second Br
 requires-python = ">=3.11"
 dependencies = [
     "groq>=1.6.0",
+    "redis>=5.0.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [tool.pytest.ini_options]

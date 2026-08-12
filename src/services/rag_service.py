@@ -35,9 +35,10 @@ can never hallucinate an answer for context it was never given.
 `user_id` comes only from the authenticated request (via deps), never
 from the client, and is threaded into every repository/vector call.
 """
+import hashlib
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Sequence
 
 from src.core.config import settings
@@ -51,7 +52,7 @@ from src.rag.chains.prompt_builder import (
     HistoryItem,
     PromptBuilder,
 )
-from src.rag.context.compressor import CompressedContext, ContextCompressor
+from src.rag.context.compressor import CompressedContext, ContextCompressor, ContextChunk
 from src.rag.rerankers.base import IdentityReranker, Reranker
 from src.repositories.conversation_repository import ConversationRepository
 from src.repositories.message_repository import MessageRepository
@@ -102,6 +103,7 @@ class RAGService:
         rerank_enabled: bool | None = None,
         rerank_top_k: int | None = None,
         history_limit: int | None = None,
+        answer_cache=None,
     ) -> None:
         self.embedding_service = embedding_service
         self.vector_repository = vector_repository
@@ -124,6 +126,12 @@ class RAGService:
         self.rerank_top_k = rerank_top_k or settings.RERANK_TOP_K
         self.history_limit = history_limit or settings.CONVERSATION_HISTORY_LIMIT
 
+        self._answer_cache = answer_cache
+        if self._answer_cache is None and settings.RAG_CACHE_ENABLED:
+            from src.core.redis_client import get_cache
+
+            self._answer_cache = get_cache()
+
     def answer(
         self,
         question: str,
@@ -136,52 +144,81 @@ class RAGService:
 
         # 2. Resolve the conversation, enforcing ownership.
         conversation = self._resolve_conversation(conversation_id, user_id)
-        history = self._load_history(conversation, user_id)
 
-        # 3. Embed the query.
-        query_vector = self.embedding_service.embed_query(cleaned)
+        # 2b. Optional Redis answer cache (RAG_CACHE_ENABLED): repeated
+        # questions skip embedding + retrieval + LLM entirely, but the
+        # exchange is still persisted with the cached provenance.
+        cache_key = self._answer_cache_key(user_id, cleaned) if self._answer_cache else None
+        cached = self._answer_cache.get_json(cache_key) if cache_key else None
 
-        # 4. Semantic retrieval - always scoped to `user_id` by the repository.
-        candidate_limit = self.top_k * 2 if self.rerank_enabled else self.top_k
-        results = self.vector_repository.search(
-            query_vector,
-            user_id,
-            limit=candidate_limit,
-            score_threshold=self.score_threshold,
-        )
-        results = self.reranker.rerank(
-            cleaned,
-            results,
-            top_k=self.rerank_top_k if self.rerank_enabled else self.top_k,
-        )
-
-        # 4b. Scan retrieved context for injection (uploads are untrusted).
-        self._scan_context_for_injection(results, user_id)
-
-        # 5. Compress the context into a character budget.
-        compressed = self.compressor.compress(results)
-
-        # 6. Generate the answer (or refuse without calling the LLM).
-        if not compressed.chunks:
-            answer = INSUFFICIENT_CONTEXT_RESPONSE
-            refused = True
-            sources: list[SourceRef] = []
+        if cached is not None:
+            answer = cached["answer"]
+            refused = bool(cached["refused"])
+            chunks = [ContextChunk(**chunk) for chunk in cached["chunks"]]
+            sources = [self._to_source_ref(chunk) for chunk in chunks]
+            history: list[HistoryItem] = []
             logger.info(
-                "RAG refused answer for user=%s conversation=%s: no relevant context",
-                user_id, conversation.id if conversation else None,
+                "RAG answer served from cache user=%s conversation=%s refused=%s sources=%d",
+                user_id, conversation.id if conversation else None, refused, len(sources),
             )
         else:
-            system_prompt, user_prompt = self.prompt_builder.build(
-                cleaned, compressed, history
+            history = self._load_history(conversation, user_id)
+
+            # 3. Embed the query.
+            query_vector = self.embedding_service.embed_query(cleaned)
+
+            # 4. Semantic retrieval - always scoped to `user_id` by the repository.
+            candidate_limit = self.top_k * 2 if self.rerank_enabled else self.top_k
+            results = self.vector_repository.search(
+                query_vector,
+                user_id,
+                limit=candidate_limit,
+                score_threshold=self.score_threshold,
             )
-            answer = self.llm_service.complete(
-                [
-                    LLMMessage(role="system", content=system_prompt),
-                    LLMMessage(role="user", content=user_prompt),
-                ]
+            results = self.reranker.rerank(
+                cleaned,
+                results,
+                top_k=self.rerank_top_k if self.rerank_enabled else self.top_k,
             )
-            refused = False
-            sources = [self._to_source_ref(chunk) for chunk in compressed.chunks]
+
+            # 4b. Scan retrieved context for injection (uploads are untrusted).
+            self._scan_context_for_injection(results, user_id)
+
+            # 5. Compress the context into a character budget.
+            compressed = self.compressor.compress(results)
+
+            # 6. Generate the answer (or refuse without calling the LLM).
+            if not compressed.chunks:
+                answer = INSUFFICIENT_CONTEXT_RESPONSE
+                refused = True
+                sources: list[SourceRef] = []
+                logger.info(
+                    "RAG refused answer for user=%s conversation=%s: no relevant context",
+                    user_id, conversation.id if conversation else None,
+                )
+            else:
+                system_prompt, user_prompt = self.prompt_builder.build(
+                    cleaned, compressed, history
+                )
+                answer = self.llm_service.complete(
+                    [
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ]
+                )
+                refused = False
+                sources = [self._to_source_ref(chunk) for chunk in compressed.chunks]
+
+            if cache_key is not None:
+                self._answer_cache.set_json(
+                    cache_key,
+                    {
+                        "answer": answer,
+                        "refused": refused,
+                        "chunks": [asdict(chunk) for chunk in compressed.chunks],
+                    },
+                    ttl=settings.RAG_CACHE_TTL_SECONDS,
+                )
 
         # 7. Persist the exchange (user + assistant messages).
         conversation = self._ensure_conversation(conversation, cleaned, user_id)
@@ -219,6 +256,12 @@ class RAGService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _answer_cache_key(user_id: uuid.UUID, cleaned_question: str) -> str:
+        """Cache key for a (user, question) answer. User-scoped by construction."""
+        digest = hashlib.sha256(f"{user_id}|{cleaned_question}".encode("utf-8")).hexdigest()
+        return f"rag:answer:{digest}"
+
     def _resolve_conversation(
         self, conversation_id: uuid.UUID | None, user_id: uuid.UUID
     ) -> Conversation | None:

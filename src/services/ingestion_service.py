@@ -25,6 +25,11 @@ from sqlalchemy.orm import Session
 
 from src.core.constants import PIPELINE_STEPS, ProcessingStatus
 from src.core.exceptions import DocumentProcessingException
+from src.core.metrics import (
+    ingestion_documents_total,
+    ingestion_pipeline_duration_seconds,
+    ingestion_pipeline_total_seconds,
+)
 from src.db.session import SessionLocal
 from src.models.document_model import Document
 from src.rag.loaders.loader_factory import get_loader
@@ -63,12 +68,17 @@ class IngestionService:
         pipeline_start = time.perf_counter()
         step_timings: dict[str, float] = {}
 
+        def _record_step(name: str, start: float) -> None:
+            elapsed = time.perf_counter() - start
+            step_timings[name] = elapsed
+            ingestion_pipeline_duration_seconds.labels(step=name).observe(elapsed)
+
         try:
             # --- Step 1: Extract text ---
             step_start = time.perf_counter()
             loader = get_loader(document.file_type)
             pages = loader.load(Path(document.file_path))
-            step_timings["extract"] = time.perf_counter() - step_start
+            _record_step("extract", step_start)
             logger.info(
                 "Document %s extract: %d pages in %.2fs",
                 document.id, len(pages), step_timings["extract"],
@@ -77,7 +87,7 @@ class IngestionService:
             # --- Step 2: Clean + chunk ---
             step_start = time.perf_counter()
             chunks = self.text_splitter.split_pages(pages)
-            step_timings["chunk"] = time.perf_counter() - step_start
+            _record_step("chunk", step_start)
             if not chunks:
                 raise DocumentProcessingException(
                     "Document produced no usable text chunks after cleaning/splitting."
@@ -90,7 +100,7 @@ class IngestionService:
             # --- Step 3: Embed ---
             step_start = time.perf_counter()
             embeddings = self.embedding_service.embed_documents([c.content for c in chunks])
-            step_timings["embed"] = time.perf_counter() - step_start
+            _record_step("embed", step_start)
             logger.info(
                 "Document %s embed: %d vectors in %.2fs",
                 document.id, len(embeddings), step_timings["embed"],
@@ -105,7 +115,7 @@ class IngestionService:
                 chunks=chunks,
                 embeddings=embeddings,
             )
-            step_timings["store"] = time.perf_counter() - step_start
+            _record_step("store", step_start)
             logger.info(
                 "Document %s store: %d vectors written in %.2fs",
                 document.id, written, step_timings["store"],
@@ -117,6 +127,8 @@ class IngestionService:
             )
 
             total_time = time.perf_counter() - pipeline_start
+            ingestion_pipeline_total_seconds.observe(total_time)
+            ingestion_documents_total.labels(status="completed").inc()
             logger.info(
                 "Document %s COMPLETED: %d chunks, total=%.2fs steps=%s",
                 document.id, written, total_time,
@@ -127,6 +139,7 @@ class IngestionService:
             raise
         except Exception as exc:  # noqa: BLE001 - intentionally broad: this is a terminal error boundary
             total_time = time.perf_counter() - pipeline_start
+            ingestion_documents_total.labels(status="failed").inc()
             logger.exception(
                 "Document %s FAILED after %.2fs: %s", document.id, total_time, exc
             )

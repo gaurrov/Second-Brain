@@ -38,6 +38,9 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "messages"
     __table_args__ = (
         Index("ix_messages_user_conversation", "user_id", "conversation_id"),
+        # Speeds up conversation history reads
+        # (WHERE conversation_id=? AND user_id=? ORDER BY created_at DESC, id DESC).
+        Index("ix_messages_conversation_user_created", "conversation_id", "user_id", "created_at"),
     )
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(

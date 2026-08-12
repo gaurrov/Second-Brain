@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks, Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from src.core.config import settings
 from src.core.exceptions import InactiveUserException, InvalidTokenException
 from src.core.security import TokenType, decode_token
 from src.db.session import get_db
@@ -93,9 +94,16 @@ def get_document_service(
     `background_tasks.add_task`) — no change needed in DocumentService
     or the ingestion pipeline itself.
     """
+    if settings.TASK_WORKER == "pool":
+        from src.workers.pool import get_worker_pool
 
-    def dispatch_processing(document_id: UUID) -> None:
-        background_tasks.add_task(process_document_task, document_id)
+        def dispatch_processing(document_id: UUID) -> None:
+            get_worker_pool().submit(process_document_task, document_id)
+
+    else:
+
+        def dispatch_processing(document_id: UUID) -> None:
+            background_tasks.add_task(process_document_task, document_id)
 
     return DocumentService(
         document_repository=document_repository,
