@@ -1,5 +1,14 @@
 version: "3.9"
 
+# Local production-like stack: Postgres (source of truth) + Qdrant (vectors)
+# + Redis (cache/rate limiting) + the FastAPI app itself.
+#
+# The app requires a real .env at the repo root (copy .env.example):
+#   JWT_SECRET_KEY=<long random secret>   GROQ_API_KEY=<key>
+# The container-level DATABASE_URL / QDRANT_* / REDIS_* overrides below take
+# precedence over anything in .env so the app always talks to the compose
+# services regardless of what the local .env says.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -28,7 +37,56 @@ services:
       - "6334:6334"   # gRPC API
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz >/dev/null 2>&1 || curl -fsS http://localhost:6333/healthz >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: secondbrain_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: secondbrain_api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://secondbrain:change_me@postgres:5432/secondbrain_db
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      QDRANT_GRPC_PORT: "6334"
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
+      # The worker pool is a per-process singleton, so 2 uvicorn workers =>
+      # 2 independent pools. Matches the Dockerfile CMD; keep in sync.
+      WORKER_CONCURRENCY: "2"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
   qdrant_data:
+  redis_data:

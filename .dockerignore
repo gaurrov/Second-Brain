@@ -1,0 +1,22 @@
+# --- Version control ---
+.git/
+.gitignore
+
+# --- Local virtualenvs / tooling ---
+.venv/
+
+# --- Python caches & build artifacts ---
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# --- Tests (not shipped in the image) ---
+tests/
+
+# --- Secrets (never ship these) ---
+.env
+
+# --- Local runtime data ---
+uploads/
+storage/
