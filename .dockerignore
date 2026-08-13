@@ -20,3 +20,5 @@ tests/
 # --- Local runtime data ---
 uploads/
 storage/
+benchmarks/
+.benchmarks/

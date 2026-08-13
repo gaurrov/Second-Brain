@@ -13,3 +13,4 @@ build/
 *.log
 PROJECT_RULES.md
 uploads/
+.benchmarks/
