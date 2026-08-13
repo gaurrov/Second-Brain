@@ -79,11 +79,10 @@ def get_cache() -> "CacheClient | None":
 
 def close_redis() -> None:
     """Close the process-wide Redis connection pool (shutdown hook)."""
-    client = get_redis.cache_info().currsize and get_redis()
-    if client is None:
+    if get_redis.cache_info().currsize == 0:
         return
     try:
-        client.close()
+        get_redis().close()
     except Exception:  # noqa: BLE001 - best effort on shutdown
         pass
     get_redis.cache_clear()

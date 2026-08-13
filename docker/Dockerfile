@@ -25,6 +25,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
 COPY requirements.txt .
+# requirements-dev.txt (test tooling) is intentionally NOT installed here — see requirements-dev.txt for local/CI use.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------

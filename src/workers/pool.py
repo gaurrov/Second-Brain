@@ -153,10 +153,9 @@ def get_worker_pool() -> WorkerPool:
 
 def stop_worker_pool() -> None:
     """Graceful shutdown hook for the process-wide pool."""
-    pool = get_worker_pool.cache_info().currsize and get_worker_pool()
-    if pool is None:
+    if get_worker_pool.cache_info().currsize == 0:
         return
-    pool.shutdown(wait=True)
+    get_worker_pool().shutdown(wait=True)
     get_worker_pool.cache_clear()
 
 

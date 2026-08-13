@@ -53,7 +53,9 @@ docker/
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+# (requirements.txt alone is what ships in the Docker image; requirements-dev.txt
+# adds test tooling for local/CI development)
 
 cp .env.example .env
 # Edit .env: set a real JWT_SECRET_KEY and Postgres credentials

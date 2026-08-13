@@ -12,6 +12,7 @@ import os
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-ci-only")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("UPLOAD_DIR", "storage/uploads")
 
 import pytest
 from fastapi.testclient import TestClient

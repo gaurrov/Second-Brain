@@ -4,6 +4,7 @@ Tests for file validation and storage utilities.
 Covers filename sanitization, extension/MIME validation, magic byte
 detection, and storage path construction.
 """
+import os
 import uuid
 
 import pytest
@@ -174,4 +175,4 @@ class TestBuildStoragePath:
         user_id = uuid.uuid4()
         doc_id = uuid.uuid4()
         path = build_storage_path(user_id, doc_id, "file.txt")
-        assert str(path).startswith("uploads")
+        assert str(path).startswith(os.path.join("storage", "uploads"))

@@ -10,7 +10,7 @@ import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from src.core import redis_client as redis_module
-from src.core.redis_client import CacheClient
+from src.core.redis_client import CacheClient, close_redis, get_redis
 
 
 class _FakeClock:
@@ -142,3 +142,8 @@ class TestGetRedis:
         finally:
             # Leave no cached value behind for later tests.
             redis_module.get_redis.cache_clear()
+
+
+def test_close_redis_before_any_client_created_does_not_raise():
+    get_redis.cache_clear()  # force a genuinely "never created" state
+    close_redis()  # must not raise

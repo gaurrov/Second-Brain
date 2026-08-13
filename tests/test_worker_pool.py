@@ -7,7 +7,7 @@ threading.Event for deterministic completion signals. No external infra.
 import threading
 import time
 
-from src.workers.pool import WorkerPool
+from src.workers.pool import WorkerPool, get_worker_pool, stop_worker_pool
 
 _TIMEOUT = 10.0
 
@@ -88,3 +88,8 @@ class TestWorkerPool:
         assert returned is False
         assert results == ["inline"]
         assert pool.running is False
+
+
+def test_stop_worker_pool_before_any_pool_created_does_not_raise():
+    get_worker_pool.cache_clear()  # force a genuinely "never created" state
+    stop_worker_pool()  # must not raise
