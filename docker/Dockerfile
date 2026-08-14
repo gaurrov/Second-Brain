@@ -45,7 +45,9 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-COPY . .
+COPY --chown=appuser:appuser . .
+
+RUN mkdir -p storage/uploads && chown -R appuser:appuser storage
 
 # Run as an unprivileged user (never root in production).
 USER appuser
