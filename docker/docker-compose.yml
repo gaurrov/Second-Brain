@@ -23,7 +23,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U secondbrain"]
+      test: ["CMD-SHELL", "pg_isready -U secondbrain -d secondbrain_db"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -38,7 +38,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz >/dev/null 2>&1 || curl -fsS http://localhost:6333/healthz >/dev/null"]
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/6333'"]
       interval: 5s
       timeout: 5s
       retries: 5
