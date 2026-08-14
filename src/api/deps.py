@@ -10,7 +10,7 @@ query params, or path.
 from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from src.core.config import settings
@@ -29,10 +29,7 @@ from src.services.document_service import DocumentService
 from src.services.ingestion_service import process_document_task
 from src.services.rag_service import RAGService, build_rag_service
 
-# tokenUrl is documentation-only here (points Swagger's "Authorize" button
-# at the login endpoint); the actual login route returns JSON, not an
-# OAuth2 form redirect.
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_user_repository(db: Session = Depends(get_db)) -> UserRepository:
@@ -51,7 +48,7 @@ def get_auth_service(
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     user_repository: UserRepository = Depends(get_user_repository),
 ) -> User:
     """
@@ -59,6 +56,9 @@ def get_current_user(
     return it. Raises InvalidTokenException / InactiveUserException on
     any failure — handled centrally by the exception handlers in main.py.
     """
+    if credentials is None:
+        raise InvalidTokenException("Missing bearer token.")
+    token = credentials.credentials
     payload = decode_token(token, expected_type=TokenType.ACCESS)
 
     try:
