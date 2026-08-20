@@ -86,19 +86,25 @@ def get_document_service(
 ) -> DocumentService:
     """
     Wires DocumentService with a background-task dispatcher for
-    processing. `process_document_task` opens its own DB session (see
+    processing. ``process_document_task`` opens its own DB session (see
     ingestion_service.py) rather than reusing the request's session,
     since the request session is closed before background tasks run.
-    Swapping to Celery/RQ later means changing only the body of
-    `dispatch_processing` (call `.delay(document_id)` instead of
-    `background_tasks.add_task`) — no change needed in DocumentService
-    or the ingestion pipeline itself.
+
+    Supported dispatchers (``TASK_WORKER`` setting):
+      - "background": FastAPI BackgroundTasks (per-request, in-process)
+      - "pool":       in-process thread pool (survives request completion)
+      - "rq":         Redis Queue (persistent, retry-capable, monitored)
     """
     if settings.TASK_WORKER == "pool":
         from src.workers.pool import get_worker_pool
 
         def dispatch_processing(document_id: UUID) -> None:
             get_worker_pool().submit(process_document_task, document_id)
+
+    elif settings.TASK_WORKER == "rq":
+        from src.workers.rq_worker import dispatch_to_rq
+
+        dispatch_processing = dispatch_to_rq  # type: ignore[assignment]
 
     else:
 

@@ -142,6 +142,13 @@ class AuthService:
             refresh_token=new_refresh_token,
         )
 
+    def logout(self, user_id: UUID) -> int:
+        """Revoke all active refresh tokens for a user. Returns count revoked."""
+        count = self.refresh_token_repository.revoke_all_for_user(user_id)
+        self.refresh_token_repository.db.commit()
+        logger.info("All tokens revoked for user: id=%s count=%d", user_id, count)
+        return count
+
     def _is_locked(self, user: User) -> bool:
         if user.locked_until is None:
             return False

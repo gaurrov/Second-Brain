@@ -76,6 +76,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from src.workers.pool import get_worker_pool
 
         get_worker_pool().start()
+    elif settings.TASK_WORKER == "rq":
+        logger.info("Task dispatcher: RQ (separate worker process)")
 
     if settings.STARTUP_WARMUP:
         _start_model_warmup()
@@ -88,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from src.workers.pool import stop_worker_pool
 
         stop_worker_pool()
+    # RQ workers are separate processes; nothing to shut down here.
 
     if settings.REDIS_ENABLED:
         from src.core.redis_client import close_redis
@@ -238,12 +241,20 @@ def _register_middleware(app: FastAPI) -> None:
                 },
             )
 
+    @app.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
 
 
@@ -319,9 +330,10 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(LLMException)
     async def llm_exception_handler(request: Request, exc: LLMException):
-        logger.warning("LLM generation failed: %s", exc.message)
+        logger.debug("LLM generation failed: %s", exc.message)
         return JSONResponse(
-            status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": exc.message}
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": "The language model could not generate a response. Please try again."},
         )
 
     @app.exception_handler(UnsupportedFileTypeException)
@@ -342,10 +354,11 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(AppException)
     async def generic_app_exception_handler(request: Request, exc: AppException):
-        # Catch-all fallback for any future AppException subclass that
-        # doesn't have a dedicated handler above.
-        logger.warning("Unhandled AppException: %s", exc.message)
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": exc.message})
+        logger.debug("Unhandled AppException: %s", exc.message)
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "An error occurred processing your request."},
+        )
 
 
 def _register_routers(app: FastAPI) -> None:

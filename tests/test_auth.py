@@ -273,3 +273,78 @@ class TestRefreshToken:
 
         assert payload["jti"]
         assert payload["exp"] > int(datetime.now(timezone.utc).timestamp())
+
+
+class TestLogout:
+    def test_logout_requires_authentication(self, client):
+        response = client.post(f"{API_PREFIX}/auth/logout")
+        assert response.status_code == 401
+
+    def test_logout_returns_204(self, client):
+        client.post(f"{API_PREFIX}/auth/register", json=_register_payload())
+        login_response = client.post(
+            f"{API_PREFIX}/auth/login",
+            json={"email": "jane@example.com", "password": "StrongP@ss123"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        response = client.post(
+            f"{API_PREFIX}/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 204
+
+    def test_logout_revokes_refresh_token(self, client):
+        client.post(f"{API_PREFIX}/auth/register", json=_register_payload())
+        login_response = client.post(
+            f"{API_PREFIX}/auth/login",
+            json={"email": "jane@example.com", "password": "StrongP@ss123"},
+        )
+        refresh_token = login_response.json()["refresh_token"]
+        access_token = login_response.json()["access_token"]
+
+        # Logout — revokes all refresh tokens.
+        client.post(
+            f"{API_PREFIX}/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # The old refresh token must no longer work.
+        response = client.post(f"{API_PREFIX}/auth/refresh", json={"refresh_token": refresh_token})
+        assert response.status_code == 401
+
+    def test_logout_does_not_invalidate_access_token_immediately(self, client):
+        """
+        JWTs are stateless — logout only revokes refresh tokens.
+        The access token stays valid until it naturally expires.
+        """
+        client.post(f"{API_PREFIX}/auth/register", json=_register_payload())
+        login_response = client.post(
+            f"{API_PREFIX}/auth/login",
+            json={"email": "jane@example.com", "password": "StrongP@ss123"},
+        )
+        access_token = login_response.json()["access_token"]
+
+        client.post(
+            f"{API_PREFIX}/auth/logout",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # The access token is still a valid JWT — profile still works.
+        response = client.get(
+            f"{API_PREFIX}/users/profile",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == 200
+
+    def test_logout_twice_is_idempotent(self, client):
+        client.post(f"{API_PREFIX}/auth/register", json=_register_payload())
+        login_response = client.post(
+            f"{API_PREFIX}/auth/login",
+            json={"email": "jane@example.com", "password": "StrongP@ss123"},
+        )
+        access_token = login_response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        assert client.post(f"{API_PREFIX}/auth/logout", headers=headers).status_code == 204
+        assert client.post(f"{API_PREFIX}/auth/logout", headers=headers).status_code == 204

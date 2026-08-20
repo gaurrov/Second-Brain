@@ -425,3 +425,228 @@ class TestConversationEndpoints:
         assert message["retrieval_metadata"][0]["page_number"] == 3
         assert message["retrieval_metadata"][0]["chunk_index"] == 1
         assert message["retrieval_metadata"][0]["score"] == 0.91
+
+
+# ---------------------------------------------------------------------------
+# Streaming tests
+# ---------------------------------------------------------------------------
+class _FakeStreamingRAGService:
+    """Fake that yields SSE events, mirroring RAGService.answer_stream()."""
+
+    def __init__(self):
+        self.calls = []
+
+    def answer_stream(self, question, user_id, conversation_id=None):
+        self.calls.append(
+            {
+                "question": question,
+                "user_id": str(user_id),
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            }
+        )
+        doc_id = str(uuid.uuid4())
+        yield {"type": "token", "content": "Hello "}
+        yield {"type": "token", "content": "world."}
+        yield {
+            "type": "sources",
+            "sources": [
+                {
+                    "document_id": doc_id,
+                    "filename": "doc.txt",
+                    "page": 1,
+                    "chunk_index": 0,
+                }
+            ],
+        }
+
+
+class _FailingStreamingRAGService:
+    """Fake that yields an error event (simulates LLM failure mid-stream)."""
+
+    def answer_stream(self, question, user_id, conversation_id=None):
+        yield {"type": "error", "content": "LLM generation failed."}
+
+
+class _RefusalStreamingRAGService:
+    """Fake that yields a refusal (no relevant context)."""
+
+    def answer_stream(self, question, user_id, conversation_id=None):
+        yield {
+            "type": "token",
+            "content": "I couldn't find enough information in your knowledge base to answer that.",
+        }
+        yield {"type": "sources", "sources": []}
+
+
+def _parse_sse(response_text: str) -> list[dict]:
+    """Parse an SSE text body into a list of event dicts."""
+    import json as _json
+
+    events = []
+    for line in response_text.strip().split("\n"):
+        line = line.strip()
+        if line.startswith("data: "):
+            events.append(_json.loads(line[6:]))
+    return events
+
+
+@pytest.fixture
+def streaming_rag(client):
+    from src.api.deps import get_rag_service
+
+    fake = _FakeStreamingRAGService()
+    client.app.dependency_overrides[get_rag_service] = lambda: fake
+    yield fake
+    client.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def failing_streaming_rag(client):
+    from src.api.deps import get_rag_service
+
+    fake = _FailingStreamingRAGService()
+    client.app.dependency_overrides[get_rag_service] = lambda: fake
+    yield fake
+    client.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def refusal_streaming_rag(client):
+    from src.api.deps import get_rag_service
+
+    fake = _RefusalStreamingRAGService()
+    client.app.dependency_overrides[get_rag_service] = lambda: fake
+    yield fake
+    client.app.dependency_overrides.clear()
+
+
+class TestChatStreamEndpoint:
+    def test_stream_requires_authentication(self, client):
+        response = client.post(f"{API_PREFIX}/chat/stream", json={"message": "hello"})
+        assert response.status_code == 401
+
+    def test_stream_returns_sse_content_type(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "What is my runbook?"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers["content-type"]
+
+    def test_stream_emits_token_and_source_events(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "What is my runbook?"},
+            headers=headers,
+        )
+        events = _parse_sse(response.text)
+
+        token_events = [e for e in events if e["type"] == "token"]
+        source_events = [e for e in events if e["type"] == "sources"]
+
+        assert len(token_events) == 2
+        assert token_events[0]["content"] == "Hello "
+        assert token_events[1]["content"] == "world."
+
+        assert len(source_events) == 1
+        sources = source_events[0]["sources"]
+        assert len(sources) == 1
+        assert sources[0]["filename"] == "doc.txt"
+
+    def test_stream_concatenates_to_full_answer(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "Tell me something"},
+            headers=headers,
+        )
+        events = _parse_sse(response.text)
+        full_answer = "".join(e["content"] for e in events if e["type"] == "token")
+        assert full_answer == "Hello world."
+
+    def test_stream_rejects_blank_message(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream", json={"message": "   "}, headers=headers
+        )
+        assert response.status_code == 422
+
+    def test_stream_rejects_empty_message(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream", json={"message": ""}, headers=headers
+        )
+        assert response.status_code == 422
+
+    def test_stream_rejects_missing_message_field(self, client, streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream", json={}, headers=headers
+        )
+        assert response.status_code == 422
+
+    def test_stream_with_llm_failure_yields_error_event(self, client, failing_streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "anything"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        error_events = [e for e in events if e["type"] == "error"]
+        assert len(error_events) == 1
+        assert "failed" in error_events[0]["content"].lower()
+
+    def test_stream_refusal_yields_no_sources(self, client, refusal_streaming_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "anything"},
+            headers=headers,
+        )
+        events = _parse_sse(response.text)
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(source_events) == 1
+        assert source_events[0]["sources"] == []
+
+    def test_stream_sources_have_no_internal_fields(self, client, streaming_rag):
+        """Sources in SSE must not expose score, snippet, or page_number."""
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "test"},
+            headers=headers,
+        )
+        events = _parse_sse(response.text)
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(source_events) == 1
+        source = source_events[0]["sources"][0]
+        assert "score" not in source
+        assert "snippet" not in source
+        assert "page_number" not in source
+
+    def test_stream_passes_user_id_from_jwt(self, client, db_session, streaming_rag):
+        headers = _register_and_login(client)
+        user_id = _user_id(db_session, "jane@example.com")
+        client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "hello"},
+            headers=headers,
+        )
+        assert streaming_rag.calls[0]["user_id"] == str(user_id)
+
+    def test_stream_does_not_expose_user_id_in_body(self, client, db_session, streaming_rag):
+        """The request body must not carry user_id; verify it is derived from JWT."""
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat/stream",
+            json={"message": "hello", "user_id": str(uuid.uuid4())},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        real_user_id = _user_id(db_session, "jane@example.com")
+        assert streaming_rag.calls[0]["user_id"] == str(real_user_id)

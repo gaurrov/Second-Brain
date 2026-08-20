@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 300
 
     # --- Rate limiting ---
-    RATE_LIMIT_ENABLED: bool = False
+    RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_DEFAULT_LIMIT: int = 120
     RATE_LIMIT_DEFAULT_WINDOW_SECONDS: int = 60
     RATE_LIMIT_LOGIN_LIMIT: int = 10
@@ -169,6 +169,11 @@ class Settings(BaseSettings):
 
     # --- Conversations ---
     CONVERSATION_HISTORY_LIMIT: int = 8
+    # Approximate character budget for conversation history included in
+    # the LLM prompt.  History is first capped by message count, then
+    # trimmed to this character budget (most recent messages kept).  A
+    # rough 4-chars-per-token ratio is used; set to 0 to disable.
+    CONVERSATION_HISTORY_MAX_CHARACTERS: int = 4000
     MAX_QUESTION_LENGTH: int = 2000
 
     # --- RAG answer cache (Redis-backed, optional) ---
@@ -180,14 +185,20 @@ class Settings(BaseSettings):
 
     # --- Background workers ---
     # "background": FastAPI BackgroundTasks (in-process, per-request).
-    # "pool": a dedicated thread pool shared across requests (recommended
-    #         for production; survives request completion).
-    TASK_WORKER: Literal["background", "pool"] = "background"
+    # "pool": a dedicated thread pool shared across requests (survives
+    #         request completion, but not process restarts).
+    # "rq": Redis Queue — persistent, retry-capable, monitored.
+    TASK_WORKER: Literal["background", "pool", "rq"] = "background"
     WORKER_CONCURRENCY: int = 2
     WORKER_QUEUE_MAXSIZE: int = 1000
     # Seconds the pool waits for in-flight tasks on shutdown before
     # cancelling.
     WORKER_SHUTDOWN_TIMEOUT_SECONDS: int = 30
+    # RQ-specific settings (only used when TASK_WORKER=rq).
+    RQ_QUEUE_NAME: str = "secondbrain"
+    RQ_DEFAULT_TIMEOUT: int = 300  # seconds per job
+    RQ_MAX_RETRIES: int = 3
+    RQ_RESULT_TTL: int = 3600  # how long results stay in Redis
 
     # --- Startup performance ---
     # Preload the embedding model during app startup (first request after
@@ -239,7 +250,7 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def _validate_database_url(cls, value: str | None) -> str | None:
-        if value is None:
+        if not value:
             return None
         scheme = value.split("://", 1)[0]
         if scheme not in _ALLOWED_DB_SCHEMES:

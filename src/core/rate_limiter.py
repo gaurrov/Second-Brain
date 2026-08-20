@@ -107,7 +107,8 @@ class FixedWindowRateLimiter:
         """
         policy = self._login_policy if login else self._default_policy
         window = int(time.time() // policy.window_seconds)
-        key = f"{self._key_prefix}:{client_id}:{window}"
+        tag = "login" if login else "default"
+        key = f"{self._key_prefix}:{client_id}:{tag}:{window}"
         count = self._store.increment(key, policy.window_seconds)
         allowed = count <= policy.limit
         if not allowed:

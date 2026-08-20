@@ -18,7 +18,7 @@ class AppException(Exception):
 
 
 class UserAlreadyExistsException(AppException):
-    def __init__(self, message: str = "A user with this email or username already exists."):
+    def __init__(self, message: str = "An account with this information already exists."):
         super().__init__(message)
 
 

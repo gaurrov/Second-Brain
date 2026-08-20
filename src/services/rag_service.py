@@ -39,7 +39,7 @@ import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, asdict
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from src.core.config import settings
 from src.core.constants import MessageRole
@@ -103,6 +103,7 @@ class RAGService:
         rerank_enabled: bool | None = None,
         rerank_top_k: int | None = None,
         history_limit: int | None = None,
+        history_max_characters: int | None = None,
         answer_cache=None,
     ) -> None:
         self.embedding_service = embedding_service
@@ -125,6 +126,10 @@ class RAGService:
         )
         self.rerank_top_k = rerank_top_k or settings.RERANK_TOP_K
         self.history_limit = history_limit or settings.CONVERSATION_HISTORY_LIMIT
+        if history_max_characters is not None:
+            self.history_max_characters = history_max_characters
+        else:
+            self.history_max_characters = settings.CONVERSATION_HISTORY_MAX_CHARACTERS
 
         self._answer_cache = answer_cache
         if self._answer_cache is None and settings.RAG_CACHE_ENABLED:
@@ -254,6 +259,163 @@ class RAGService:
         )
 
     # ------------------------------------------------------------------
+    # Streaming variant
+    # ------------------------------------------------------------------
+    def answer_stream(
+        self,
+        question: str,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None = None,
+    ) -> Iterator[dict]:
+        """Yield SSE-ready dicts for a streaming RAG answer.
+
+        Event types yielded:
+
+        ``{"type": "token", "content": "..."}``
+            Incremental text chunk from the LLM.  Multiple events are
+            yielded as the model generates output.
+
+        ``{"type": "sources", "sources": [...]}``
+            Final event carrying the source citations.
+
+        ``{"type": "error", "content": "..."}``
+            Emitted on LLM or retrieval failure.  The stream is closed
+            after this event.
+
+        The same retrieval, reranking, compression, and persistence logic
+        as ``answer()`` is used — only the LLM call is streamed.
+        """
+        # 1. Validate / sanitise.
+        cleaned = self.guard.validate_question(question)
+
+        # 2. Resolve conversation, enforcing ownership.
+        conversation = self._resolve_conversation(conversation_id, user_id)
+
+        # 2b. Optional cache.
+        cache_key = self._answer_cache_key(user_id, cleaned) if self._answer_cache else None
+        cached = self._answer_cache.get_json(cache_key) if cache_key else None
+
+        if cached is not None:
+            # Cache hit — yield the full answer as a single token event.
+            answer = cached["answer"]
+            refused = bool(cached["refused"])
+            chunks = [ContextChunk(**chunk) for chunk in cached["chunks"]]
+            sources = [self._to_source_ref(chunk) for chunk in chunks]
+            history: list[HistoryItem] = []
+            logger.info(
+                "RAG stream served from cache user=%s conversation=%s refused=%s sources=%d",
+                user_id, conversation.id if conversation else None, refused, len(sources),
+            )
+            yield {"type": "token", "content": answer}
+        else:
+            history = self._load_history(conversation, user_id)
+
+            # 3. Embed.
+            query_vector = self.embedding_service.embed_query(cleaned)
+
+            # 4. Retrieve — always scoped to user_id.
+            candidate_limit = self.top_k * 2 if self.rerank_enabled else self.top_k
+            results = self.vector_repository.search(
+                query_vector,
+                user_id,
+                limit=candidate_limit,
+                score_threshold=self.score_threshold,
+            )
+            results = self.reranker.rerank(
+                cleaned,
+                results,
+                top_k=self.rerank_top_k if self.rerank_enabled else self.top_k,
+            )
+
+            # 4b. Scan for injection in retrieved context.
+            self._scan_context_for_injection(results, user_id)
+
+            # 5. Compress.
+            compressed = self.compressor.compress(results)
+
+            # 6. Generate or refuse.
+            if not compressed.chunks:
+                answer = INSUFFICIENT_CONTEXT_RESPONSE
+                refused = True
+                sources: list[SourceRef] = []
+                logger.info(
+                    "RAG stream refused for user=%s conversation=%s: no relevant context",
+                    user_id, conversation.id if conversation else None,
+                )
+                yield {"type": "token", "content": answer}
+            else:
+                system_prompt, user_prompt = self.prompt_builder.build(
+                    cleaned, compressed, history
+                )
+                messages = [
+                    LLMMessage(role="system", content=system_prompt),
+                    LLMMessage(role="user", content=user_prompt),
+                ]
+                answer_chunks: list[str] = []
+                try:
+                    for chunk in self.llm_service.complete_stream(messages):
+                        answer_chunks.append(chunk)
+                        yield {"type": "token", "content": chunk}
+                except Exception as exc:
+                    logger.exception("Streaming LLM call failed for user=%s", user_id)
+                    yield {"type": "error", "content": "LLM generation failed."}
+                    return
+
+                answer = "".join(answer_chunks).strip()
+                refused = False
+                sources = [self._to_source_ref(chunk) for chunk in compressed.chunks]
+
+            if cache_key is not None:
+                self._answer_cache.set_json(
+                    cache_key,
+                    {
+                        "answer": answer,
+                        "refused": refused,
+                        "chunks": [asdict(chunk) for chunk in compressed.chunks],
+                    },
+                    ttl=settings.RAG_CACHE_TTL_SECONDS,
+                )
+
+        # 7. Persist the exchange.
+        conversation = self._ensure_conversation(conversation, cleaned, user_id)
+        user_message = self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.USER,
+                content=cleaned,
+            )
+        )
+        assistant_message = self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content=answer,
+                retrieval_metadata=self._serialize_sources(sources),
+            )
+        )
+
+        logger.info(
+            "RAG stream completed for user=%s conversation=%s refused=%s sources=%d",
+            user_id, conversation.id, refused, len(sources),
+        )
+
+        # 8. Final sources event.
+        yield {
+            "type": "sources",
+            "sources": [
+                {
+                    "document_id": str(source.document_id),
+                    "filename": source.filename,
+                    "page": source.page_number,
+                    "chunk_index": source.chunk_index,
+                }
+                for source in sources
+            ],
+        }
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
@@ -293,10 +455,29 @@ class RAGService:
         messages = self.message_repository.list_for_conversation(
             conversation.id, user_id, limit=self.history_limit, offset=0
         )
-        return [
+        history = [
             HistoryItem(role=message.role.value, content=message.content)
             for message in messages
         ]
+        return self._truncate_history(history)
+
+    def _truncate_history(self, history: list[HistoryItem]) -> list[HistoryItem]:
+        """Trim history to fit the character budget, keeping the most recent messages.
+
+        Messages are iterated from newest to oldest; once the running
+        total exceeds ``self.history_max_characters`` the remaining
+        (older) messages are dropped.  A budget of 0 disables the cap.
+        """
+        if not history or self.history_max_characters <= 0:
+            return history
+        total = 0
+        keep = 0
+        for i in range(len(history) - 1, -1, -1):
+            total += len(history[i].content)
+            if total > self.history_max_characters:
+                break
+            keep = i
+        return history[keep:]
 
     def _scan_context_for_injection(self, results: Sequence, user_id: uuid.UUID) -> None:
         """Log any injection patterns found inside retrieved chunks.

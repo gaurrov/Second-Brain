@@ -7,7 +7,7 @@ response. No business logic lives in this file.
 """
 from fastapi import APIRouter, Depends, status
 
-from src.api.deps import get_auth_service
+from src.api.deps import get_auth_service, get_current_user
 from src.api.v1.schemas.auth_schema import (
     RefreshTokenRequest,
     TokenResponse,
@@ -15,6 +15,7 @@ from src.api.v1.schemas.auth_schema import (
     UserRegisterRequest,
 )
 from src.api.v1.schemas.user_schema import UserResponse
+from src.models.user_model import User
 from src.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -59,3 +60,15 @@ def refresh(
     auth_service: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
     return auth_service.refresh_access_token(payload.refresh_token)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke all active refresh tokens for the current user",
+)
+def logout(
+    current_user: User = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> None:
+    auth_service.logout(current_user.id)

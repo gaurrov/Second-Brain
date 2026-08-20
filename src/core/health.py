@@ -73,7 +73,7 @@ class HealthChecker:
             return ComponentHealth("database", True, latency_ms=_elapsed(start))
         except Exception as exc:  # noqa: BLE001 - probe must not raise
             logger.warning("Database readiness probe failed: %s", exc)
-            return ComponentHealth("database", False, detail=str(exc), latency_ms=_elapsed(start))
+            return ComponentHealth("database", False, detail="connection failed", latency_ms=_elapsed(start))
 
     def _check_qdrant(self) -> ComponentHealth:
         from src.vectorstore.qdrant_client import get_qdrant_client
@@ -85,7 +85,7 @@ class HealthChecker:
             return ComponentHealth("qdrant", True, latency_ms=_elapsed(start))
         except Exception as exc:  # noqa: BLE001 - probe must not raise
             logger.warning("Qdrant readiness probe failed: %s", exc)
-            return ComponentHealth("qdrant", False, detail=str(exc), latency_ms=_elapsed(start))
+            return ComponentHealth("qdrant", False, detail="connection failed", latency_ms=_elapsed(start))
 
     def _check_redis(self) -> ComponentHealth:
         if not settings.REDIS_ENABLED:
@@ -100,7 +100,8 @@ class HealthChecker:
             redis.ping()
             return ComponentHealth("redis", True, latency_ms=_elapsed(start))
         except Exception as exc:  # noqa: BLE001 - probe must not raise
-            return ComponentHealth("redis", False, detail=str(exc), latency_ms=_elapsed(start))
+            logger.warning("Redis readiness probe failed: %s", exc)
+            return ComponentHealth("redis", False, detail="connection failed", latency_ms=_elapsed(start))
 
 
 def _now_ms() -> float:

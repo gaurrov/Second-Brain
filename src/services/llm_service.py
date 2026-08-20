@@ -15,7 +15,7 @@ Resilience:
 """
 import logging
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Iterator, Protocol, Sequence
 
 from src.core.config import settings
 from src.core.exceptions import LLMException
@@ -115,7 +115,7 @@ class LLMService:
         except Exception as exc:  # noqa: BLE001 - translate any SDK/transport error
             llm_requests_total.labels(outcome="error").inc()
             logger.exception("Groq chat completion failed for model %s", self.model)
-            raise LLMException(f"LLM generation failed: {exc}") from exc
+            raise LLMException("LLM generation failed. Please try again later.") from exc
 
         content = response.choices[0].message.content if response.choices else None
         if not content or not content.strip():
@@ -125,3 +125,45 @@ class LLMService:
 
         llm_requests_total.labels(outcome="success").inc()
         return content.strip()
+
+    def complete_stream(self, messages: Sequence[LLMMessage]) -> Iterator[str]:
+        """Yield text chunks as they arrive from the Groq streaming API.
+
+        Unlike ``complete()``, this method does **not** retry — the caller
+        (typically ``RAGService.answer_stream``) owns retry/reconnect logic
+        because partial output may already have been sent to the client.
+
+        Raises ``LLMException`` on transport errors or an empty stream.
+        """
+        try:
+            with llm_request_duration_seconds.time():
+                stream = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[message.to_dict() for message in messages],
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    stream=True,
+                )
+        except LLMException:
+            llm_requests_total.labels(outcome="error").inc()
+            raise
+        except Exception as exc:  # noqa: BLE001 - translate any SDK/transport error
+            llm_requests_total.labels(outcome="error").inc()
+            logger.exception("Groq streaming failed for model %s", self.model)
+            raise LLMException("LLM streaming failed. Please try again later.") from exc
+
+        chunk_count = 0
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                chunk_count += 1
+                yield delta.content
+
+        if chunk_count == 0:
+            llm_requests_total.labels(outcome="empty").inc()
+            logger.warning("Groq returned an empty stream for model %s", self.model)
+            raise LLMException("The language model returned an empty response.")
+
+        llm_requests_total.labels(outcome="success").inc()

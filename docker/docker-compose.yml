@@ -1,18 +1,21 @@
-version: "3.9"
-
-# Local production-like stack: Postgres (source of truth) + Qdrant (vectors)
-# + Redis (cache/rate limiting) + the FastAPI app itself.
+# ---------------------------------------------------------------------------
+# Local / production Docker Compose — Second Brain RAG
+# ---------------------------------------------------------------------------
+# Usage:
+#   cp .env.example .env          # fill in secrets (GROQ_API_KEY, JWT_SECRET_KEY)
+#   docker compose up --build -d
 #
-# The app requires a real .env at the repo root (copy .env.example):
-#   JWT_SECRET_KEY=<long random secret>   GROQ_API_KEY=<key>
-# The container-level DATABASE_URL / QDRANT_* / REDIS_* overrides below take
-# precedence over anything in .env so the app always talks to the compose
-# services regardless of what the local .env says.
+# Secrets (GROQ_API_KEY, JWT_SECRET_KEY, POSTGRES_PASSWORD) are read from
+# the host's .env file via `env_file:` below.  They are NEVER committed to
+# git and never appear in the compose file itself.
+# ---------------------------------------------------------------------------
 
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
-    container_name: secondbrain_postgres
+    image: postgres:15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: secondbrain
@@ -21,33 +24,35 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U secondbrain -d secondbrain_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector store
+  # ---------------------------------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.11.3
-    container_name: secondbrain_qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC API
+      - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/localhost/6333'"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # Redis — caching, rate-limiting, future RQ broker
+  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
-    container_name: secondbrain_redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:
@@ -55,29 +60,34 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # FastAPI application
+  # ---------------------------------------------------------------------------
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: secondbrain_api
     restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - upload_data:/app/storage/uploads
     env_file:
       - ../.env
     environment:
-      DATABASE_URL: postgresql+psycopg2://secondbrain:change_me@postgres:5432/secondbrain_db
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
       QDRANT_HOST: qdrant
-      QDRANT_PORT: "6333"
-      QDRANT_GRPC_PORT: "6334"
+      QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       REDIS_ENABLED: "true"
-      # The worker pool is a per-process singleton, so 2 uvicorn workers =>
-      # 2 independent pools. Matches the Dockerfile CMD; keep in sync.
-      WORKER_CONCURRENCY: "2"
-    ports:
-      - "8000:8000"
+      CACHE_ENABLED: "true"
+      RATE_LIMIT_ENABLED: "true"
+      TASK_WORKER: pool
+      APP_ENV: production
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,8 +95,46 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # RQ Worker — separate process for background document ingestion
+  # ---------------------------------------------------------------------------
+  rq-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    command: >
+      python -c "from src.workers.rq_worker import run_rq_worker; run_rq_worker()"
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      REDIS_URL: redis://redis:6379/0
+      REDIS_ENABLED: "true"
+      TASK_WORKER: rq
+      APP_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_healthy
 
 volumes:
-  postgres_data:
+  pg_data:
   qdrant_data:
   redis_data:
+  upload_data:

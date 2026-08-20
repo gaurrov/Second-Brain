@@ -55,6 +55,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Source citations that supported the answer, ordered by relevance.",
     )
+    conversation_id: UUID | None = Field(
+        default=None,
+        description="The conversation this exchange belongs to.",
+    )
 
 
 class SourceRefSchema(BaseModel):

@@ -7,18 +7,65 @@ their own knowledge base and read/delete their own conversations. Thin
 controllers only: validation and orchestration live in RAGService /
 ConversationService.
 
-STREAMING SEAM: `POST /chat` currently returns the full `ChatResponse`
-after the whole answer is generated. A future streaming mode will add an
-SSE/JSON-stream variant of this route that streams tokens as they are
-produced. The contract that makes that swap safe is already in place:
-RAGService.answer() returns the complete `RAGResult` (answer + message
-ids + sources) which the streaming route would reuse verbatim once the
-LLM finishes — the response schema, message ids, and persisted
-retrieval_metadata do not change between streaming and non-streaming.
+STREAMING: ``POST /chat/stream`` streams tokens as SSE events, reusing
+the same retrieval + prompt construction as the non-streaming endpoint.
+The full assistant response (including sources) is persisted to the
+database after the stream completes.
+
+SSE Event Format (POST /chat/stream)
+------------------------------------
+Content-Type: text/event-stream
+
+Events are newline-delimited JSON prefixed with ``data: ``:
+
+  data: {"type":"token","content":"Hello"}\n
+  data: {"type":"token","content":" world."}\n
+  data: {"type":"sources","sources":[{"document_id":"...","filename":"doc.pdf","page":1,"chunk_index":0}]}\n
+
+Event types:
+  ``token``    — Incremental text chunk from the LLM.  Multiple events
+                 are emitted as the model generates output.  Concatenate
+                 all ``content`` fields to reconstruct the full answer.
+
+  ``sources``  — Final event carrying source citations.  The ``sources``
+                 array is empty when the answer is a refusal (insufficient
+                 context).
+
+  ``error``    — Emitted on LLM or retrieval failure.  The stream is
+                 closed after this event.  ``content`` contains a
+                 human-readable error message.
+
+Frontend usage (JavaScript):
+
+  const es = new EventSource(url);          // or use fetch() + ReadableStream
+  const source = new EventSource('/api/v1/chat/stream');
+  // For POST with body, use fetch():
+  const res = await fetch('/api/v1/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ...' },
+    body: JSON.stringify({ message: '...' }),
+  });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value);
+    for (const line of text.split('\\n')) {
+      if (line.startsWith('data: ')) {
+        const event = JSON.parse(line.slice(6));
+        if (event.type === 'token') appendToUI(event.content);
+        if (event.type === 'sources') showCitations(event.sources);
+        if (event.type === 'error') showError(event.content);
+      }
+    }
+  }
 """
+import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from src.api.deps import (
     get_conversation_service,
@@ -36,6 +83,7 @@ from src.api.v1.schemas.chat_schema import (
     SourceRefSchema,
     SourceSchema,
 )
+from src.core.exceptions import LLMException
 from src.models.user_model import User
 from src.services.conversation_service import ConversationService
 from src.services.rag_service import RAGService
@@ -78,6 +126,62 @@ def ask_question(
             )
             for source in result.sources
         ],
+        conversation_id=result.conversation_id,
+    )
+
+
+def _sse(event: dict) -> str:
+    """Format a dict as a single Server-Sent Events frame."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
+@router.post(
+    "/chat/stream",
+    status_code=status.HTTP_200_OK,
+    summary="Stream a RAG answer as Server-Sent Events",
+    description=(
+        "Same retrieval and prompt construction as POST /chat, but the "
+        "LLM output is streamed token-by-token. The final SSE event "
+        "carries source citations. The assistant response is persisted "
+        "to the database after the stream completes."
+    ),
+    responses={
+        200: {
+            "description": "SSE stream of token and source events.",
+            "content": {"text/event-stream": {}},
+        },
+    },
+)
+async def stream_answer(
+    request: ChatRequest,
+    raw_request: Request,
+    current_user: User = Depends(get_current_user),
+    rag_service: RAGService = Depends(get_rag_service),
+) -> StreamingResponse:
+    async def _event_generator():
+        try:
+            for event in rag_service.answer_stream(
+                request.message,
+                user_id=current_user.id,
+                conversation_id=request.conversation_id,
+            ):
+                # If the client disconnected, stop generating.
+                if await raw_request.is_disconnected():
+                    break
+                yield _sse(event)
+        except LLMException:
+            yield _sse({"type": "error", "content": "LLM generation failed."})
+        except Exception:
+            yield _sse({"type": "error", "content": "An unexpected error occurred."})
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
