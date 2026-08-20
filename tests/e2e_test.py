@@ -110,6 +110,18 @@ print("=" * 70, flush=True)
 print("  SECOND BRAIN E2E VERIFICATION", flush=True)
 print("=" * 70, flush=True)
 
+# --- Unique credentials per run (survives volume-persisted databases) ---
+_run_id = uuid.uuid4().hex[:12]
+USER_A_EMAIL = f"alice_{_run_id}@e2e-secondbrain.io"
+USER_A_USERNAME = f"alice_{_run_id}"
+USER_A_PASSWORD = "SecurePass123!"
+USER_B_EMAIL = f"bob_{_run_id}@e2e-secondbrain.io"
+USER_B_USERNAME = f"bob_{_run_id}"
+USER_B_PASSWORD = "SecurePass456!"
+log("info", f"Run ID: {_run_id}")
+log("info", f"User A: {USER_A_EMAIL} / {USER_A_USERNAME}")
+log("info", f"User B: {USER_B_EMAIL} / {USER_B_USERNAME}")
+
 # --- HEALTH CHECKS ---
 print("\n[1] INFRASTRUCTURE HEALTH CHECKS", flush=True)
 status, body, _ = api("GET", "/health/live", base=ROOT)
@@ -123,15 +135,15 @@ record("health/ready", body is not None, f"status={status}")
 # =========================================================================
 print("\n[2] USER A: Registration & Authentication", flush=True)
 status, body, _ = api("POST", "/auth/register", {
-    "email": "alice@test.com",
-    "username": "alice_test",
-    "password": "SecurePass123!"
+    "email": USER_A_EMAIL,
+    "username": USER_A_USERNAME,
+    "password": USER_A_PASSWORD,
 })
 record("A-register", status == 201, f"status={status}")
 
 status, body, _ = api("POST", "/auth/login", {
-    "email": "alice@test.com",
-    "password": "SecurePass123!"
+    "email": USER_A_EMAIL,
+    "password": USER_A_PASSWORD,
 })
 record("A-login", status == 200 and "access_token" in (body or {}),
        f"status={status}")
@@ -238,24 +250,24 @@ else:
 
 # --- USER PROFILE ---
 status, body, _ = api("GET", "/users/profile", headers=auth_a)
-record("A-user-profile", status == 200 and body and body.get("username") == "alice_test",
+record("A-user-profile", status == 200 and body and body.get("username") == USER_A_USERNAME,
        f"status={status}")
 
 # =========================================================================
 # USER B FLOW
 # =========================================================================
 print("\n[8] USER B: Registration & Authentication", flush=True)
-sleep_between("spacing auth calls", 2)
+sleep_between("rate-limit window clearance before User B", 62)
 status, body, _ = api("POST", "/auth/register", {
-    "email": "bob@test.com",
-    "username": "bob_test",
-    "password": "SecurePass456!"
+    "email": USER_B_EMAIL,
+    "username": USER_B_USERNAME,
+    "password": USER_B_PASSWORD,
 })
 record("B-register", status == 201, f"status={status}")
 
 status, body, _ = api("POST", "/auth/login", {
-    "email": "bob@test.com",
-    "password": "SecurePass456!"
+    "email": USER_B_EMAIL,
+    "password": USER_B_PASSWORD,
 })
 record("B-login", status == 200 and "access_token" in (body or {}),
        f"status={status}")
@@ -362,18 +374,18 @@ except Exception as e:
 print("\n[13] ERROR HANDLING", flush=True)
 sleep_between("spacing before error tests", 2)
 
-# Duplicate registration
+# Duplicate registration (must hit same email → 409)
 status, body, _ = api("POST", "/auth/register", {
-    "email": "alice@test.com",
-    "username": "alice_dup",
-    "password": "SecurePass123!"
+    "email": USER_A_EMAIL,
+    "username": f"alice_dup_{_run_id}",
+    "password": USER_A_PASSWORD,
 })
 record("error-dup-email", status == 409, f"status={status} (expected 409)")
 
 # Wrong password
 status, body, _ = api("POST", "/auth/login", {
-    "email": "alice@test.com",
-    "password": "WrongPassword!"
+    "email": USER_A_EMAIL,
+    "password": "WrongPassword!",
 })
 record("error-wrong-password", status == 401, f"status={status} (expected 401)")
 
