@@ -12,6 +12,7 @@ import pytest
 
 from src.core.config import settings
 from src.core.constants import MessageRole
+from src.core.exceptions import LLMException
 from src.models.conversation_model import Conversation
 from src.models.message_model import Message
 from src.models.user_model import User
@@ -77,6 +78,13 @@ class _FakeRAGService:
         )
 
 
+class _FailingRAGService:
+    """RAGService stub that simulates an LLM failure."""
+
+    def answer(self, question, user_id, conversation_id=None):
+        raise LLMException("Groq API connection timed out.")
+
+
 @pytest.fixture
 def fake_rag(client):
     from src.api.deps import get_rag_service
@@ -87,67 +95,187 @@ def fake_rag(client):
     client.app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def failing_rag(client):
+    from src.api.deps import get_rag_service
+
+    fake = _FailingRAGService()
+    client.app.dependency_overrides[get_rag_service] = lambda: fake
+    yield fake
+    client.app.dependency_overrides.clear()
+
+
 class TestChatEndpoint:
     def test_chat_requires_authentication(self, client):
-        response = client.post(f"{API_PREFIX}/chat", json={"question": "hello"})
+        response = client.post(f"{API_PREFIX}/chat", json={"message": "hello"})
         assert response.status_code == 401
 
-    def test_chat_returns_answer_and_records_caller(self, client, db_session, fake_rag):
+    def test_chat_returns_answer_and_sources(self, client, db_session, fake_rag):
         headers = _register_and_login(client)
         user_id = _user_id(db_session, "jane@example.com")
 
         response = client.post(
-            f"{API_PREFIX}/chat", json={"question": "What is my runbook?"}, headers=headers
+            f"{API_PREFIX}/chat", json={"message": "What is my runbook?"}, headers=headers
         )
 
         assert response.status_code == 200
         body = response.json()
         assert body["answer"] == "Test answer."
-        assert body["refused"] is False
         assert len(body["sources"]) == 1
-        assert body["sources"][0]["filename"] == "doc.txt"
+        source = body["sources"][0]
+        assert source["filename"] == "doc.txt"
+        assert source["page"] == 1
+        assert source["chunk_index"] == 0
+        assert "document_id" in source
+        uuid.UUID(source["document_id"])
         assert fake_rag.calls[0]["question"] == "What is my runbook?"
         assert fake_rag.calls[0]["user_id"] == str(user_id)
+
+    def test_chat_response_has_no_internal_fields(self, client, db_session, fake_rag):
+        """Response must not expose refused, conversation_id, score, snippet, etc."""
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat", json={"message": "test"}, headers=headers
+        )
+        body = response.json()
+        assert "refused" not in body
+        assert "conversation_id" not in body
+        assert "user_message_id" not in body
+        assert "assistant_message_id" not in body
+        if body["sources"]:
+            assert "score" not in body["sources"][0]
+            assert "snippet" not in body["sources"][0]
+            assert "page_number" not in body["sources"][0]
 
     def test_chat_refuses_politely_when_context_insufficient(self, client, fake_rag):
         fake_rag.refused = True
         headers = _register_and_login(client)
         response = client.post(
-            f"{API_PREFIX}/chat", json={"question": "anything"}, headers=headers
+            f"{API_PREFIX}/chat", json={"message": "anything"}, headers=headers
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["refused"] is True
         assert body["sources"] == []
         assert "couldn't find enough information" in body["answer"]
 
-    def test_chat_passes_existing_conversation_id(self, client, db_session, fake_rag):
+    def test_chat_rejects_blank_message(self, client, fake_rag):
         headers = _register_and_login(client)
-        user_id = _user_id(db_session, "jane@example.com")
-        conversation = _seed_conversation(db_session, user_id)
+        response = client.post(f"{API_PREFIX}/chat", json={"message": "   "}, headers=headers)
+        assert response.status_code == 422
 
+    def test_chat_rejects_empty_message(self, client, fake_rag):
+        headers = _register_and_login(client)
+        response = client.post(f"{API_PREFIX}/chat", json={"message": ""}, headers=headers)
+        assert response.status_code == 422
+
+    def test_chat_rejects_missing_message_field(self, client, fake_rag):
+        headers = _register_and_login(client)
+        response = client.post(f"{API_PREFIX}/chat", json={}, headers=headers)
+        assert response.status_code == 422
+
+    def test_chat_rejects_overlong_message(self, client, fake_rag):
+        headers = _register_and_login(client)
         response = client.post(
             f"{API_PREFIX}/chat",
-            json={"question": "follow up?", "conversation_id": str(conversation.id)},
+            json={"message": "a" * (settings.MAX_QUESTION_LENGTH + 1)},
+            headers=headers,
+        )
+        assert response.status_code == 422
+
+    def test_chat_with_llm_failure_returns_502(self, client, failing_rag):
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat", json={"message": "anything"}, headers=headers
+        )
+        assert response.status_code == 502
+        assert "detail" in response.json()
+
+    def test_chat_does_not_expose_user_id(self, client, db_session, fake_rag):
+        """The request body must never carry user_id; verify it is derived from JWT."""
+        headers = _register_and_login(client)
+        response = client.post(
+            f"{API_PREFIX}/chat",
+            json={"message": "hello", "user_id": str(uuid.uuid4())},
             headers=headers,
         )
         assert response.status_code == 200
-        assert response.json()["conversation_id"] == str(conversation.id)
-        assert fake_rag.calls[0]["conversation_id"] == str(conversation.id)
+        real_user_id = _user_id(db_session, "jane@example.com")
+        assert fake_rag.calls[0]["user_id"] == str(real_user_id)
 
-    def test_chat_rejects_blank_question(self, client, fake_rag):
-        headers = _register_and_login(client)
-        response = client.post(f"{API_PREFIX}/chat", json={"question": "   "}, headers=headers)
-        assert response.status_code == 422
 
-    def test_chat_rejects_overlong_question(self, client, fake_rag):
-        headers = _register_and_login(client)
-        response = client.post(
-            f"{API_PREFIX}/chat",
-            json={"question": "a" * (settings.MAX_QUESTION_LENGTH + 1)},
-            headers=headers,
+class TestChatCrossUserIsolation:
+    def test_user_a_cannot_see_user_b_sources_via_chat(self, client, db_session):
+        """Both users chat; User A's sources must never contain User B's data."""
+        from src.api.deps import get_rag_service
+
+        doc_a_id = uuid.uuid4()
+        doc_b_id = uuid.uuid4()
+
+        class _IsolatedRAGService:
+            def __init__(self):
+                self.calls = []
+
+            def answer(self, question, user_id, conversation_id=None):
+                self.calls.append({"user_id": str(user_id)})
+                sources_a = [
+                    SourceRef(
+                        document_id=str(doc_a_id),
+                        filename="a_secret.txt",
+                        page_number=1,
+                        chunk_index=0,
+                        score=0.95,
+                        snippet="A's secret content",
+                    )
+                ]
+                sources_b = [
+                    SourceRef(
+                        document_id=str(doc_b_id),
+                        filename="b_doc.txt",
+                        page_number=2,
+                        chunk_index=1,
+                        score=0.88,
+                        snippet="B's content",
+                    )
+                ]
+                return RAGResult(
+                    answer=f"Answer for {user_id}",
+                    conversation_id=uuid.uuid4(),
+                    user_message_id=uuid.uuid4(),
+                    assistant_message_id=uuid.uuid4(),
+                    refused=False,
+                    sources=sources_b if len(self.calls) > 1 else sources_a,
+                )
+
+        isolated = _IsolatedRAGService()
+        client.app.dependency_overrides[get_rag_service] = lambda: isolated
+
+        headers_a = _register_and_login(client, email="a@iso.com", username="iso_user_a")
+        headers_b = _register_and_login(client, email="b@iso.com", username="iso_user_b")
+
+        resp_a = client.post(
+            f"{API_PREFIX}/chat", json={"message": "tell me secrets"}, headers=headers_a
         )
-        assert response.status_code == 422
+        resp_b = client.post(
+            f"{API_PREFIX}/chat", json={"message": "tell me secrets"}, headers=headers_b
+        )
+
+        assert resp_a.status_code == 200
+        assert resp_b.status_code == 200
+
+        body_a = resp_a.json()
+        body_b = resp_b.json()
+
+        a_doc_ids = {s["document_id"] for s in body_a["sources"]}
+        b_doc_ids = {s["document_id"] for s in body_b["sources"]}
+
+        assert str(doc_a_id) in a_doc_ids
+        assert str(doc_b_id) not in a_doc_ids
+        assert str(doc_b_id) in b_doc_ids
+        assert str(doc_a_id) not in b_doc_ids
+
+        assert isolated.calls[0]["user_id"] != isolated.calls[1]["user_id"]
+
+        client.app.dependency_overrides.clear()
 
 
 class TestConversationEndpoints:

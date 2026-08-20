@@ -16,38 +16,56 @@ from src.core.config import settings
 
 
 class ChatRequest(BaseModel):
-    question: str = Field(
+    message: str = Field(
         min_length=1,
         max_length=settings.MAX_QUESTION_LENGTH,
+        description="The user's question about their knowledge base.",
         examples=["What does my onboarding runbook say?"],
     )
-    conversation_id: UUID | None = None
+    conversation_id: UUID | None = Field(
+        default=None,
+        description="Optional existing conversation ID to continue. "
+        "Omit to start a new conversation.",
+        examples=[],
+    )
 
-    @field_validator("question")
+    @field_validator("message")
     @classmethod
-    def question_not_blank(cls, value: str) -> str:
+    def message_not_blank(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("Question cannot be empty.")
+            raise ValueError("Message cannot be empty.")
         return stripped
 
 
+class SourceSchema(BaseModel):
+    """A single source citation returned to the API consumer."""
+
+    document_id: UUID = Field(description="The document that produced this chunk.")
+    filename: str = Field(description="Original filename of the source document.")
+    page: int | None = Field(default=None, description="Page number within the source document, if available.")
+    chunk_index: int = Field(description="Index of the chunk within the document.")
+
+
+class ChatResponse(BaseModel):
+    """Response from the RAG chat endpoint."""
+
+    answer: str = Field(description="The assistant's answer generated from the knowledge base.")
+    sources: list[SourceSchema] = Field(
+        default_factory=list,
+        description="Source citations that supported the answer, ordered by relevance.",
+    )
+
+
 class SourceRefSchema(BaseModel):
+    """Full source reference stored in retrieval_metadata on persisted messages."""
+
     document_id: UUID
     filename: str
     page_number: int | None = None
     chunk_index: int
     score: float
     snippet: str
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    conversation_id: UUID
-    user_message_id: UUID
-    assistant_message_id: UUID
-    refused: bool = False
-    sources: list[SourceRefSchema] = []
 
 
 class ConversationResponse(BaseModel):

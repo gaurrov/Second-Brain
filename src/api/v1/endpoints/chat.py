@@ -34,6 +34,7 @@ from src.api.v1.schemas.chat_schema import (
     MessageListResponse,
     MessageResponse,
     SourceRefSchema,
+    SourceSchema,
 )
 from src.models.user_model import User
 from src.services.conversation_service import ConversationService
@@ -45,7 +46,16 @@ router = APIRouter(tags=["Chat"])
 @router.post(
     "/chat",
     response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
     summary="Ask a question against your private knowledge base",
+    description=(
+        "Send a question and receive an answer grounded in the user's "
+        "uploaded documents. The response includes source citations "
+        "(document ID, filename, page, chunk index) for every chunk that "
+        "contributed to the answer. Authentication is required; the "
+        "search is automatically scoped to the authenticated user's data."
+    ),
+    response_description="The generated answer and source citations.",
 )
 def ask_question(
     request: ChatRequest,
@@ -53,24 +63,18 @@ def ask_question(
     rag_service: RAGService = Depends(get_rag_service),
 ) -> ChatResponse:
     result = rag_service.answer(
-        request.question,
+        request.message,
         user_id=current_user.id,
         conversation_id=request.conversation_id,
     )
     return ChatResponse(
         answer=result.answer,
-        conversation_id=result.conversation_id,
-        user_message_id=result.user_message_id,
-        assistant_message_id=result.assistant_message_id,
-        refused=result.refused,
         sources=[
-            SourceRefSchema(
+            SourceSchema(
                 document_id=UUID(source.document_id),
                 filename=source.filename,
-                page_number=source.page_number,
+                page=source.page_number,
                 chunk_index=source.chunk_index,
-                score=source.score,
-                snippet=source.snippet,
             )
             for source in result.sources
         ],
