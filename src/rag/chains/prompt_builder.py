@@ -42,6 +42,13 @@ Hard rules:
 5. Be concise and factual. Where helpful, mention the source filename attached to the relevant context chunk.
 """.format(refusal=INSUFFICIENT_CONTEXT_RESPONSE)
 
+# Used only for messages classified as small talk (no document grounding
+# available or needed). Never a substitute for the strict document-answering
+# SYSTEM_PROMPT above — session 3's intent classifier routes to this
+# prompt when the user is greeting or making small talk, not asking a
+# real document question.
+CONVERSATIONAL_SYSTEM_PROMPT = """You are Second Brain, the user's personal knowledge assistant. Respond warmly and naturally to greetings and casual conversation. You do not have any document context for this message - if the user asks a real question that would need their uploaded documents, say you'd be happy to help and ask them what they'd like to know, rather than guessing or inventing an answer. Keep it brief and friendly."""
+
 CONTEXT_OPEN = "<context>"
 CONTEXT_CLOSE = "</context>"
 QUESTION_OPEN = "<question>"
@@ -69,6 +76,24 @@ class PromptBuilder:
     ) -> tuple[str, str]:
         """Return (system_prompt, user_prompt) for the given query."""
         return SYSTEM_PROMPT, self.format_user_prompt(question, context, history or [])
+
+    def build_conversational(
+        self,
+        question: str,
+        history: list[HistoryItem] | None = None,
+    ) -> tuple[str, str]:
+        """Return (system_prompt, user_prompt) for a small-talk message.
+
+        Unlike build(), this produces a prompt with NO <context> section —
+        there is no retrieved document context for conversational replies.
+        The user prompt contains only optional <history> and the <question>.
+        """
+        sections: list[str] = []
+        if history:
+            sections.append(self._format_history(history))
+        sections.append(f"{QUESTION_OPEN}\n{question}\n{QUESTION_CLOSE}")
+        user_prompt = "\n\n".join(sections)
+        return CONVERSATIONAL_SYSTEM_PROMPT, user_prompt
 
     def format_user_prompt(
         self,

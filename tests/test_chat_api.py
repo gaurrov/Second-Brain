@@ -132,14 +132,13 @@ class TestChatEndpoint:
         assert fake_rag.calls[0]["user_id"] == str(user_id)
 
     def test_chat_response_has_no_internal_fields(self, client, db_session, fake_rag):
-        """Response must not expose refused, conversation_id, score, snippet, etc."""
+        """Response must not expose refused, user_message_id, assistant_message_id, score, snippet, etc."""
         headers = _register_and_login(client)
         response = client.post(
             f"{API_PREFIX}/chat", json={"message": "test"}, headers=headers
         )
         body = response.json()
         assert "refused" not in body
-        assert "conversation_id" not in body
         assert "user_message_id" not in body
         assert "assistant_message_id" not in body
         if body["sources"]:

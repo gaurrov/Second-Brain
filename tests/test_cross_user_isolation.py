@@ -233,9 +233,16 @@ class TestChatIsolation:
         from unittest.mock import patch
         from src.services.rag_service import RAGResult, SourceRef
         from src.api.deps import get_rag_service
+        from src.core.exceptions import ConversationNotFoundException
 
         class _FakeRAG:
             def answer(self, question, user_id, conversation_id=None):
+                if conversation_id is not None:
+                    from src.repositories.conversation_repository import ConversationRepository
+                    conv_repo = ConversationRepository(db_session)
+                    conv = conv_repo.get_by_id_for_user(conversation_id, user_id)
+                    if conv is None:
+                        raise ConversationNotFoundException()
                 return RAGResult(
                     answer="Test answer",
                     conversation_id=conversation_id or uuid.uuid4(),

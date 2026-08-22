@@ -47,6 +47,7 @@ from src.core.exceptions import ConversationNotFoundException
 from src.models.conversation_model import Conversation
 from src.models.message_model import Message
 from src.rag.chains.injection_guard import PromptInjectionGuard
+from src.rag.chains.intent_classifier import is_conversational
 from src.rag.chains.prompt_builder import (
     INSUFFICIENT_CONTEXT_RESPONSE,
     HistoryItem,
@@ -194,13 +195,26 @@ class RAGService:
 
             # 6. Generate the answer (or refuse without calling the LLM).
             if not compressed.chunks:
-                answer = INSUFFICIENT_CONTEXT_RESPONSE
-                refused = True
-                sources: list[SourceRef] = []
-                logger.info(
-                    "RAG refused answer for user=%s conversation=%s: no relevant context",
-                    user_id, conversation.id if conversation else None,
-                )
+                if is_conversational(cleaned):
+                    system_prompt, user_prompt = self.prompt_builder.build_conversational(cleaned, history)
+                    answer = self.llm_service.complete([
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ])
+                    refused = False
+                    sources: list[SourceRef] = []
+                    logger.info(
+                        "RAG conversational reply for user=%s conversation=%s (no document context needed)",
+                        user_id, conversation.id if conversation else None,
+                    )
+                else:
+                    answer = INSUFFICIENT_CONTEXT_RESPONSE
+                    refused = True
+                    sources: list[SourceRef] = []
+                    logger.info(
+                        "RAG refused answer for user=%s conversation=%s: no relevant context",
+                        user_id, conversation.id if conversation else None,
+                    )
             else:
                 system_prompt, user_prompt = self.prompt_builder.build(
                     cleaned, compressed, history

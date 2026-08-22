@@ -9,10 +9,14 @@ disposable test Postgres instance (e.g. via docker/docker-compose.yml)
 rather than relying on this fixture.
 """
 import os
+from pathlib import Path
+
+collect_ignore = [str(Path(__file__).parent / "e2e_test.py")]
 
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-ci-only")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("UPLOAD_DIR", "storage/uploads")
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient

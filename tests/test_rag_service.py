@@ -29,7 +29,7 @@ from src.core.exceptions import (
 from src.db.base_class import Base
 from src.models.conversation_model import Conversation
 from src.models.message_model import Message
-from src.rag.chains.prompt_builder import INSUFFICIENT_CONTEXT_RESPONSE
+from src.rag.chains.prompt_builder import CONVERSATIONAL_SYSTEM_PROMPT, INSUFFICIENT_CONTEXT_RESPONSE, SYSTEM_PROMPT
 from src.rag.splitters.text_splitter import TextChunk
 from src.repositories.conversation_repository import ConversationRepository
 from src.repositories.message_repository import MessageRepository
@@ -924,3 +924,77 @@ class TestNoContextRefusal:
         rag.answer(texts[1], user_id)
 
         assert llm.calls == []
+
+
+class TestConversationalGreeting:
+    """Verify that pure small-talk gets a friendly reply, not a refusal."""
+
+    def test_greeting_gets_friendly_reply_not_refusal(self, db, vector_repo):
+        """A conversational greeting with no matching docs calls the LLM
+        with the conversational prompt, not the strict document prompt."""
+        # Seed an unrelated document so the lexical embedder has a vocabulary,
+        # but the greeting won't match it.
+        texts = ["Chocolate cake needs flour, sugar, eggs and butter."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(vector_repo, embedder, user_id, uuid.uuid4(), "recipe.txt", texts[0])
+
+        llm = FakeLLM(answer="Hey there! How can I help you today?")
+        rag = _build_rag(db, vector_repo, embedder, llm)
+        result = rag.answer("hi", user_id)
+
+        # It is NOT a refusal — the LLM was called.
+        assert result.refused is False
+        assert result.sources == []
+        assert result.answer == "Hey there! How can I help you today?"
+        assert len(llm.calls) == 1
+
+        # The system prompt is the conversational one, not the strict doc one.
+        system_msg = llm.calls[0][0]
+        assert system_msg.role == "system"
+        assert system_msg.content == CONVERSATIONAL_SYSTEM_PROMPT
+        assert system_msg.content != SYSTEM_PROMPT
+
+    def test_real_question_no_docs_still_refuses(self, db, vector_repo):
+        """A real informational question with no matching docs is refused
+        WITHOUT calling the LLM — the anti-hallucination guarantee holds."""
+        texts = ["Chocolate cake needs flour, sugar, eggs and butter."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(vector_repo, embedder, user_id, uuid.uuid4(), "recipe.txt", texts[0])
+
+        llm = FakeLLM()
+        rag = _build_rag(db, vector_repo, embedder, llm)
+        result = rag.answer("what is the capital of France", user_id)
+
+        assert result.refused is True
+        assert result.answer == INSUFFICIENT_CONTEXT_RESPONSE
+        assert result.sources == []
+        # The LLM must NOT have been called.
+        assert llm.calls == []
+
+    def test_conversational_opener_with_matching_docs_still_grounds(self, db, vector_repo):
+        """A message that looks conversational but HAS real matching docs
+        goes through the normal grounded path with the strict system prompt."""
+        texts = [
+            "my resume skills include python, FastAPI, Docker, Kubernetes, SQL deployment",
+            "hi, what skills are in my resume",
+        ]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+        _seed_document(vector_repo, embedder, user_id, document_id, "resume.txt", texts[0])
+
+        llm = FakeLLM(answer="Your resume lists Python, FastAPI, Docker, Kubernetes, and SQL.")
+        rag = _build_rag(db, vector_repo, embedder, llm)
+        result = rag.answer(texts[1], user_id)
+
+        assert result.refused is False
+        assert len(result.sources) == 1
+        assert result.sources[0].document_id == str(document_id)
+
+        # The strict document system prompt was used, not the conversational one.
+        system_msg = llm.calls[0][0]
+        assert system_msg.role == "system"
+        assert system_msg.content == SYSTEM_PROMPT
+        assert system_msg.content != CONVERSATIONAL_SYSTEM_PROMPT
