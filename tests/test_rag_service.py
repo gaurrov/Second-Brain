@@ -30,6 +30,7 @@ from src.db.base_class import Base
 from src.models.conversation_model import Conversation
 from src.models.message_model import Message
 from src.rag.chains.prompt_builder import CONVERSATIONAL_SYSTEM_PROMPT, INSUFFICIENT_CONTEXT_RESPONSE, SYSTEM_PROMPT
+from src.rag.chains.query_router import QueryRouter, Route, RoutingResult
 from src.rag.splitters.text_splitter import TextChunk
 from src.repositories.conversation_repository import ConversationRepository
 from src.repositories.message_repository import MessageRepository
@@ -88,6 +89,11 @@ class FakeLLM:
     def complete(self, messages: list) -> str:
         self.calls.append(messages)
         return self.answer
+
+    def complete_stream(self, messages: list):
+        """Yield the canned answer as a single chunk."""
+        self.calls.append(messages)
+        yield self.answer
 
 
 class RecordingVectorRepository(VectorRepository):
@@ -163,7 +169,29 @@ def _seed_document(
     )
 
 
+class _AlwaysDocumentRouter:
+    """Stub router that always routes to DOCUMENT.
+
+    Used as the default in ``_build_rag`` so existing pipeline tests
+    continue to exercise the full retrieval path without needing to
+    change their test messages.
+    """
+
+    def route(self, message, history=None):
+        return RoutingResult(route=Route.DOCUMENT, search_query=message)
+
+
 def _build_rag(db, vector_repo, embedder, llm, **overrides) -> RAGService:
+    # Default: always route to DOCUMENT so existing pipeline tests are
+    # unaffected by the QueryRouter.  Tests that need real routing can
+    # pass query_router=QueryRouter() explicitly.
+    overrides.setdefault("query_router", _AlwaysDocumentRouter())
+    # Default: a permissive retrieval threshold so lexical-fake scores
+    # (vocabulary-overlap cosine) are not filtered by the production
+    # default (settings.RETRIEVAL_SCORE_THRESHOLD = 0.46, tuned for the
+    # real bge embedding model).  The production default wiring is
+    # asserted separately in TestDocumentRouteUsesQdrant.
+    overrides.setdefault("score_threshold", 0.1)
     return RAGService(
         embedding_service=embedder,
         vector_repository=vector_repo,
@@ -244,7 +272,16 @@ class TestAnswerGeneration:
     def test_query_embedding_and_user_scoped_search(self, db, vector_repo):
         user_a, user_b, doc_a, doc_b, embedder = _seed_two_users(vector_repo)
         llm = FakeLLM()
-        rag = _build_rag(db, vector_repo, embedder, llm)
+        # Built directly (not via _build_rag) so the service falls back to
+        # the production default threshold from settings.
+        rag = RAGService(
+            embedding_service=embedder,
+            vector_repository=vector_repo,
+            llm_service=llm,
+            conversation_repository=ConversationRepository(db),
+            message_repository=MessageRepository(db),
+            query_router=_AlwaysDocumentRouter(),
+        )
 
         rag.answer("how do I deploy kubernetes?", user_b)
 
@@ -930,17 +967,18 @@ class TestConversationalGreeting:
     """Verify that pure small-talk gets a friendly reply, not a refusal."""
 
     def test_greeting_gets_friendly_reply_not_refusal(self, db, vector_repo):
-        """A conversational greeting with no matching docs calls the LLM
-        with the conversational prompt, not the strict document prompt."""
-        # Seed an unrelated document so the lexical embedder has a vocabulary,
-        # but the greeting won't match it.
+        """A conversational greeting routes to CHAT (via QueryRouter) and
+        calls the LLM with the conversational prompt, no Qdrant involved."""
         texts = ["Chocolate cake needs flour, sugar, eggs and butter."]
         embedder = LexicalEmbedder(texts)
         user_id = uuid.uuid4()
         _seed_document(vector_repo, embedder, user_id, uuid.uuid4(), "recipe.txt", texts[0])
 
         llm = FakeLLM(answer="Hey there! How can I help you today?")
-        rag = _build_rag(db, vector_repo, embedder, llm)
+        rag = _build_rag(
+            db, vector_repo, embedder, llm,
+            query_router=QueryRouter(),
+        )
         result = rag.answer("hi", user_id)
 
         # It is NOT a refusal — the LLM was called.
@@ -998,3 +1036,330 @@ class TestConversationalGreeting:
         assert system_msg.role == "system"
         assert system_msg.content == SYSTEM_PROMPT
         assert system_msg.content != CONVERSATIONAL_SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# QueryRouter integration tests — CHAT route skips Qdrant
+# ---------------------------------------------------------------------------
+
+class TestChatRouteSkipsQdrant:
+    """Verify that CHAT-routed messages never touch the vector store.
+
+    These tests use the real QueryRouter (not _AlwaysDocumentRouter)
+    and assert that vector_repo.search_calls is empty and embed_query
+    is never called.
+    """
+
+    def _build_rag_with_real_router(self, db, vector_repo, embedder, llm):
+        return _build_rag(
+            db, vector_repo, embedder, llm,
+            query_router=QueryRouter(),
+        )
+
+    @pytest.mark.parametrize("message", [
+        "Hi",
+        "Hello",
+        "Tell me a joke",
+        "What is Docker?",
+    ])
+    def test_qdrant_not_called_for_chat_messages(self, db, vector_repo, message):
+        """Chat messages must never trigger embedding or Qdrant search."""
+        embedder = LexicalEmbedder([message])
+        llm = FakeLLM(answer="Hey there!")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        result = rag.answer(message, uuid.uuid4())
+
+        # LLM was called with the conversational prompt.
+        assert len(llm.calls) == 1
+        system_msg = llm.calls[0][0]
+        assert system_msg.role == "system"
+        assert system_msg.content == CONVERSATIONAL_SYSTEM_PROMPT
+
+        # Qdrant was NEVER touched.
+        assert vector_repo.search_calls == []
+        assert embedder.embed_query_calls == []
+
+        # Sources are always empty for CHAT.
+        assert result.sources == []
+        assert result.refused is False
+
+    @pytest.mark.parametrize("message", [
+        "Hi",
+        "Hello",
+        "Tell me a joke",
+        "What is Docker?",
+    ])
+    def test_chat_stream_not_called_for_chat_messages(self, db, vector_repo, message):
+        """Streaming chat messages must never trigger embedding or Qdrant search."""
+        embedder = LexicalEmbedder([message])
+        llm = FakeLLM(answer="Hey there!")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        events = list(rag.answer_stream(message, uuid.uuid4()))
+
+        token_events = [e for e in events if e["type"] == "token"]
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(token_events) == 1
+        assert len(source_events) == 1
+        assert source_events[0]["sources"] == []
+
+        # Qdrant was NEVER touched.
+        assert vector_repo.search_calls == []
+        assert embedder.embed_query_calls == []
+
+
+# ---------------------------------------------------------------------------
+# QueryRouter integration tests — DOCUMENT route uses Qdrant
+# ---------------------------------------------------------------------------
+
+class TestDocumentRouteUsesQdrant:
+    """Verify that DOCUMENT-routed messages go through the full pipeline."""
+
+    def _build_rag_with_real_router(self, db, vector_repo, embedder, llm):
+        return _build_rag(
+            db, vector_repo, embedder, llm,
+            query_router=QueryRouter(),
+        )
+
+    def test_qdrant_called_for_document_query(self, db, vector_repo):
+        """A document-referencing query must trigger embedding + Qdrant search."""
+        texts = [
+            "my document describes CQRS and event sourcing architecture patterns",
+            "what does my document say about architecture?",
+        ]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "architecture.pdf", texts[0],
+        )
+
+        llm = FakeLLM(answer="Your architecture document discusses CQRS.")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+        result = rag.answer(texts[1], user_id)
+
+        # Qdrant WAS called.
+        assert len(vector_repo.search_calls) == 1
+        assert len(embedder.embed_query_calls) == 1
+
+        # Got real sources from retrieval.
+        assert len(result.sources) == 1
+        assert result.sources[0].filename == "architecture.pdf"
+        assert result.refused is False
+
+    def test_document_stream_uses_qdrant(self, db, vector_repo):
+        """A streaming document query must trigger embedding + Qdrant search."""
+        texts = [
+            "my document describes CQRS and event sourcing architecture",
+            "what does my document say about architecture?",
+        ]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "architecture.pdf", texts[0],
+        )
+
+        llm = FakeLLM(answer="Your architecture document discusses CQRS.")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+        events = list(rag.answer_stream(texts[1], user_id))
+
+        # Qdrant WAS called.
+        assert len(vector_repo.search_calls) == 1
+        assert len(embedder.embed_query_calls) == 1
+
+        # Sources event is non-empty.
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(source_events) == 1
+        assert len(source_events[0]["sources"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Three routing cases — CHAT vs DOCUMENT+no-chunks vs DOCUMENT+chunks
+# ---------------------------------------------------------------------------
+
+class TestThreeRoutingCases:
+    """Demonstrates the three distinct outcomes of the hybrid router.
+
+    CASE 1 — CHAT: normal question, no Qdrant, LLM answers from general
+    knowledge.
+
+    CASE 2 — DOCUMENT + no chunks: document-specific question, Qdrant
+    called but nothing relevant found, refusal WITHOUT calling the LLM.
+
+    CASE 3 — DOCUMENT + chunks: document-specific question, relevant
+    chunks found, RAG answer with citations.
+    """
+
+    def _build_rag_with_real_router(self, db, vector_repo, embedder, llm):
+        return _build_rag(
+            db, vector_repo, embedder, llm,
+            query_router=QueryRouter(),
+        )
+
+    def test_case1_chat_normal_llm_answer_no_qdrant(self, db, vector_repo):
+        """'What is Kubernetes?' → CHAT → LLM answers, Qdrant never called."""
+        texts = ["The deployment runbook says to run kubectl rollout restart."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "runbook.txt", texts[0],
+        )
+        llm = FakeLLM(answer="Kubernetes is a container orchestration platform.")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        result = rag.answer("What is Kubernetes?", user_id)
+
+        # LLM was called and answered from general knowledge.
+        assert result.refused is False
+        assert result.answer == "Kubernetes is a container orchestration platform."
+        assert result.sources == []
+
+        # Qdrant was NEVER called — this is a pure chat response.
+        assert vector_repo.search_calls == []
+        assert embedder.embed_query_calls == []
+
+        # The system prompt is the conversational one, not the strict doc one.
+        system_msg = llm.calls[0][0]
+        assert system_msg.content == CONVERSATIONAL_SYSTEM_PROMPT
+
+    def test_case2_document_no_chunks_refuses_without_llm(self, db, vector_repo):
+        """'What does my uploaded architecture.pdf say about Kubernetes?'
+        → DOCUMENT → Qdrant called, nothing relevant → refusal, no LLM."""
+        texts = ["Chocolate cake needs flour, sugar, eggs and butter."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "recipe.txt", texts[0],
+        )
+        llm = FakeLLM()
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        result = rag.answer(
+            "What does my uploaded architecture.pdf say about Kubernetes?",
+            user_id,
+        )
+
+        # Refusal: no hallucination.
+        assert result.refused is True
+        assert result.answer == INSUFFICIENT_CONTEXT_RESPONSE
+        assert result.sources == []
+
+        # Qdrant WAS called (document route), but LLM was NEVER called.
+        assert len(vector_repo.search_calls) == 1
+        assert len(embedder.embed_query_calls) == 1
+        assert llm.calls == []
+
+    def test_case3_document_with_chunks_rag_answer(self, db, vector_repo):
+        """'What does my document say about architecture?'
+        → DOCUMENT → Qdrant called, relevant chunks found → RAG answer."""
+        texts = [
+            "My architecture document describes CQRS, event sourcing, and microservices.",
+            "what does my document say about architecture?",
+        ]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            document_id, "architecture.pdf", texts[0],
+        )
+        llm = FakeLLM(answer="Your document describes CQRS, event sourcing, and microservices.")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        result = rag.answer(texts[1], user_id)
+
+        # RAG answer with sources.
+        assert result.refused is False
+        assert "CQRS" in result.answer
+        assert len(result.sources) == 1
+        assert result.sources[0].document_id == str(document_id)
+
+        # Qdrant was called, LLM was called with retrieved context.
+        assert len(vector_repo.search_calls) == 1
+        assert len(llm.calls) == 1
+        user_prompt = llm.calls[0][1].content
+        assert "CQRS" in user_prompt
+
+    def test_stream_case1_chat_no_qdrant(self, db, vector_repo):
+        """Streaming: CHAT → token events, no Qdrant."""
+        texts = ["Some document."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "doc.txt", texts[0],
+        )
+        llm = FakeLLM(answer="Hello there!")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        events = list(rag.answer_stream("Hi", user_id))
+
+        token_events = [e for e in events if e["type"] == "token"]
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(token_events) == 1
+        assert token_events[0]["content"] == "Hello there!"
+        assert source_events[0]["sources"] == []
+
+        # Qdrant NEVER called.
+        assert vector_repo.search_calls == []
+        assert embedder.embed_query_calls == []
+
+    def test_stream_case2_document_no_chunks_refuses(self, db, vector_repo):
+        """Streaming: DOCUMENT + no chunks → refusal token, no LLM."""
+        texts = ["Chocolate cake needs flour, sugar, eggs and butter."]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            uuid.uuid4(), "recipe.txt", texts[0],
+        )
+        llm = FakeLLM()
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        events = list(rag.answer_stream(
+            "What does my uploaded architecture.pdf say about Kubernetes?",
+            user_id,
+        ))
+
+        token_events = [e for e in events if e["type"] == "token"]
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(token_events) == 1
+        assert token_events[0]["content"] == INSUFFICIENT_CONTEXT_RESPONSE
+        assert source_events[0]["sources"] == []
+
+        # Qdrant called, LLM NEVER called.
+        assert len(vector_repo.search_calls) == 1
+        assert llm.calls == []
+
+    def test_stream_case3_document_with_chunks_rag_answer(self, db, vector_repo):
+        """Streaming: DOCUMENT + chunks → token events + sources."""
+        texts = [
+            "My architecture document describes CQRS and event sourcing.",
+            "what does my document say about architecture?",
+        ]
+        embedder = LexicalEmbedder(texts)
+        user_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+        _seed_document(
+            vector_repo, embedder, user_id,
+            document_id, "architecture.pdf", texts[0],
+        )
+        llm = FakeLLM(answer="Your document describes CQRS and event sourcing.")
+        rag = self._build_rag_with_real_router(db, vector_repo, embedder, llm)
+
+        events = list(rag.answer_stream(texts[1], user_id))
+
+        token_events = [e for e in events if e["type"] == "token"]
+        source_events = [e for e in events if e["type"] == "sources"]
+        assert len(token_events) == 1
+        assert "CQRS" in token_events[0]["content"]
+        assert len(source_events[0]["sources"]) == 1
+        assert source_events[0]["sources"][0]["document_id"] == str(document_id)
+
+        # Qdrant called, LLM called with retrieved context.
+        assert len(vector_repo.search_calls) == 1
+        assert len(llm.calls) == 1

@@ -157,8 +157,13 @@ class Settings(BaseSettings):
     GROQ_TIMEOUT_SECONDS: int = 60
 
     # --- RAG retrieval ---
+    # RETRIEVAL_SCORE_THRESHOLD is tuned for BAAI/bge-base-en-v1.5 cosine
+    # similarity: measured noise (off-topic queries) peaks at ~0.45 while
+    # relevant hits start at ~0.48, so 0.46 filters hallucination bait
+    # without dropping grounded context. Re-tune if EMBEDDING_MODEL_NAME
+    # changes.
     RETRIEVAL_TOP_K: int = 8
-    RETRIEVAL_SCORE_THRESHOLD: float = 0.30
+    RETRIEVAL_SCORE_THRESHOLD: float = 0.46
     RERANK_ENABLED: bool = False
     RERANK_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     RERANK_TOP_K: int = 4

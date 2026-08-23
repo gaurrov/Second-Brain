@@ -49,10 +49,12 @@ from src.models.message_model import Message
 from src.rag.chains.injection_guard import PromptInjectionGuard
 from src.rag.chains.intent_classifier import is_conversational
 from src.rag.chains.prompt_builder import (
+    CONVERSATIONAL_SYSTEM_PROMPT,
     INSUFFICIENT_CONTEXT_RESPONSE,
     HistoryItem,
     PromptBuilder,
 )
+from src.rag.chains.query_router import QueryRouter, Route
 from src.rag.context.compressor import CompressedContext, ContextCompressor, ContextChunk
 from src.rag.rerankers.base import IdentityReranker, Reranker
 from src.repositories.conversation_repository import ConversationRepository
@@ -99,6 +101,7 @@ class RAGService:
         prompt_builder: PromptBuilder | None = None,
         guard: PromptInjectionGuard | None = None,
         reranker: Reranker | None = None,
+        query_router: QueryRouter | None = None,
         top_k: int | None = None,
         score_threshold: float | None = None,
         rerank_enabled: bool | None = None,
@@ -117,6 +120,7 @@ class RAGService:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.guard = guard or PromptInjectionGuard()
         self.reranker = reranker or IdentityReranker()
+        self.query_router = query_router or QueryRouter()
 
         self.top_k = top_k or settings.RETRIEVAL_TOP_K
         self.score_threshold = (
@@ -151,7 +155,17 @@ class RAGService:
         # 2. Resolve the conversation, enforcing ownership.
         conversation = self._resolve_conversation(conversation_id, user_id)
 
-        # 2b. Optional Redis answer cache (RAG_CACHE_ENABLED): repeated
+        # 3. Load history for routing decision (shared by both routes).
+        history = self._load_history(conversation, user_id)
+
+        # 4. Route: CHAT skips Qdrant entirely; DOCUMENT runs the full pipeline.
+        routing = self.query_router.route(cleaned, history)
+        if routing.route is Route.CHAT:
+            return self._answer_chat(cleaned, user_id, conversation, history)
+
+        # --- DOCUMENT route below (existing pipeline) ---
+
+        # 4b. Optional Redis answer cache (RAG_CACHE_ENABLED): repeated
         # questions skip embedding + retrieval + LLM entirely, but the
         # exchange is still persisted with the cached provenance.
         cache_key = self._answer_cache_key(user_id, cleaned) if self._answer_cache else None
@@ -162,18 +176,15 @@ class RAGService:
             refused = bool(cached["refused"])
             chunks = [ContextChunk(**chunk) for chunk in cached["chunks"]]
             sources = [self._to_source_ref(chunk) for chunk in chunks]
-            history: list[HistoryItem] = []
             logger.info(
                 "RAG answer served from cache user=%s conversation=%s refused=%s sources=%d",
                 user_id, conversation.id if conversation else None, refused, len(sources),
             )
         else:
-            history = self._load_history(conversation, user_id)
-
-            # 3. Embed the query.
+            # 5. Embed the query.
             query_vector = self.embedding_service.embed_query(cleaned)
 
-            # 4. Semantic retrieval - always scoped to `user_id` by the repository.
+            # 6. Semantic retrieval - always scoped to `user_id` by the repository.
             candidate_limit = self.top_k * 2 if self.rerank_enabled else self.top_k
             results = self.vector_repository.search(
                 query_vector,
@@ -187,34 +198,21 @@ class RAGService:
                 top_k=self.rerank_top_k if self.rerank_enabled else self.top_k,
             )
 
-            # 4b. Scan retrieved context for injection (uploads are untrusted).
+            # 6b. Scan retrieved context for injection (uploads are untrusted).
             self._scan_context_for_injection(results, user_id)
 
-            # 5. Compress the context into a character budget.
+            # 7. Compress the context into a character budget.
             compressed = self.compressor.compress(results)
 
-            # 6. Generate the answer (or refuse without calling the LLM).
+            # 8. Generate the answer (or refuse without calling the LLM).
             if not compressed.chunks:
-                if is_conversational(cleaned):
-                    system_prompt, user_prompt = self.prompt_builder.build_conversational(cleaned, history)
-                    answer = self.llm_service.complete([
-                        LLMMessage(role="system", content=system_prompt),
-                        LLMMessage(role="user", content=user_prompt),
-                    ])
-                    refused = False
-                    sources: list[SourceRef] = []
-                    logger.info(
-                        "RAG conversational reply for user=%s conversation=%s (no document context needed)",
-                        user_id, conversation.id if conversation else None,
-                    )
-                else:
-                    answer = INSUFFICIENT_CONTEXT_RESPONSE
-                    refused = True
-                    sources: list[SourceRef] = []
-                    logger.info(
-                        "RAG refused answer for user=%s conversation=%s: no relevant context",
-                        user_id, conversation.id if conversation else None,
-                    )
+                answer = INSUFFICIENT_CONTEXT_RESPONSE
+                refused = True
+                sources: list[SourceRef] = []
+                logger.info(
+                    "RAG refused answer for user=%s conversation=%s: no relevant context",
+                    user_id, conversation.id if conversation else None,
+                )
             else:
                 system_prompt, user_prompt = self.prompt_builder.build(
                     cleaned, compressed, history
@@ -239,7 +237,7 @@ class RAGService:
                     ttl=settings.RAG_CACHE_TTL_SECONDS,
                 )
 
-        # 7. Persist the exchange (user + assistant messages).
+        # 9. Persist the exchange (user + assistant messages).
         conversation = self._ensure_conversation(conversation, cleaned, user_id)
         user_message = self.message_repository.create(
             Message(
@@ -271,6 +269,111 @@ class RAGService:
             refused=refused,
             sources=sources,
         )
+
+    # ------------------------------------------------------------------
+    # CHAT route — conversational reply without document retrieval
+    # ------------------------------------------------------------------
+    def _answer_chat(
+        self,
+        cleaned: str,
+        user_id: uuid.UUID,
+        conversation,
+        history: list[HistoryItem],
+    ) -> RAGResult:
+        """Handle a CHAT-routed message: call LLM directly, skip Qdrant."""
+        system_prompt, user_prompt = self.prompt_builder.build_conversational(cleaned, history)
+        answer = self.llm_service.complete([
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ])
+
+        sources: list[SourceRef] = []
+        logger.info(
+            "RAG chat reply for user=%s conversation=%s (no retrieval needed)",
+            user_id, conversation.id if conversation else None,
+        )
+
+        conversation = self._ensure_conversation(conversation, cleaned, user_id)
+        user_message = self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.USER,
+                content=cleaned,
+            )
+        )
+        assistant_message = self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content=answer,
+                retrieval_metadata=None,
+            )
+        )
+
+        return RAGResult(
+            answer=answer,
+            conversation_id=conversation.id,
+            user_message_id=user_message.id,
+            assistant_message_id=assistant_message.id,
+            refused=False,
+            sources=sources,
+        )
+
+    # ------------------------------------------------------------------
+    # Streaming CHAT route
+    # ------------------------------------------------------------------
+    def _answer_stream_chat(
+        self,
+        cleaned: str,
+        user_id: uuid.UUID,
+        conversation,
+        history: list[HistoryItem],
+    ) -> Iterator[dict]:
+        """Handle a CHAT-routed streaming message: LLM stream, skip Qdrant."""
+        system_prompt, user_prompt = self.prompt_builder.build_conversational(cleaned, history)
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ]
+
+        answer_chunks: list[str] = []
+        try:
+            for chunk in self.llm_service.complete_stream(messages):
+                answer_chunks.append(chunk)
+                yield {"type": "token", "content": chunk}
+        except Exception as exc:
+            logger.exception("Streaming LLM call failed for user=%s", user_id)
+            yield {"type": "error", "content": "LLM generation failed."}
+            return
+
+        answer = "".join(answer_chunks).strip()
+        logger.info(
+            "RAG stream chat reply for user=%s conversation=%s (no retrieval needed)",
+            user_id, conversation.id if conversation else None,
+        )
+
+        conversation = self._ensure_conversation(conversation, cleaned, user_id)
+        self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.USER,
+                content=cleaned,
+            )
+        )
+        self.message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                content=answer,
+                retrieval_metadata=None,
+            )
+        )
+
+        yield {"type": "sources", "sources": []}
 
     # ------------------------------------------------------------------
     # Streaming variant
@@ -305,7 +408,18 @@ class RAGService:
         # 2. Resolve conversation, enforcing ownership.
         conversation = self._resolve_conversation(conversation_id, user_id)
 
-        # 2b. Optional cache.
+        # 3. Load history for routing decision.
+        history = self._load_history(conversation, user_id)
+
+        # 4. Route: CHAT skips Qdrant entirely; DOCUMENT runs the full pipeline.
+        routing = self.query_router.route(cleaned, history)
+        if routing.route is Route.CHAT:
+            yield from self._answer_stream_chat(cleaned, user_id, conversation, history)
+            return
+
+        # --- DOCUMENT route below ---
+
+        # 4b. Optional cache.
         cache_key = self._answer_cache_key(user_id, cleaned) if self._answer_cache else None
         cached = self._answer_cache.get_json(cache_key) if cache_key else None
 
@@ -315,14 +429,12 @@ class RAGService:
             refused = bool(cached["refused"])
             chunks = [ContextChunk(**chunk) for chunk in cached["chunks"]]
             sources = [self._to_source_ref(chunk) for chunk in chunks]
-            history: list[HistoryItem] = []
             logger.info(
                 "RAG stream served from cache user=%s conversation=%s refused=%s sources=%d",
                 user_id, conversation.id if conversation else None, refused, len(sources),
             )
             yield {"type": "token", "content": answer}
         else:
-            history = self._load_history(conversation, user_id)
 
             # 3. Embed.
             query_vector = self.embedding_service.embed_query(cleaned)
@@ -563,4 +675,5 @@ def build_rag_service(db) -> RAGService:
         conversation_repository=ConversationRepository(db),
         message_repository=MessageRepository(db),
         reranker=build_reranker(),
+        query_router=QueryRouter(),
     )
