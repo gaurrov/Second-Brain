@@ -3,6 +3,7 @@
 import * as React from "react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
+import rehypeSanitize from "rehype-sanitize"
 
 import { cn } from "@/lib/utils"
 
@@ -112,7 +113,7 @@ export function MarkdownContent({
 }) {
   return (
     <div className={cn("text-sm text-foreground", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={markdownComponents}>
         {content}
       </ReactMarkdown>
     </div>
