@@ -1,7 +1,8 @@
-import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Brain, FileText, MessageSquare, Sparkles } from "lucide-react";
-import { ThemeToggle } from "@/components/theme-toggle"; // We'll create this right after
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Brain, FileText, MessageSquare, Sparkles } from "lucide-react"
+import { ThemeToggle } from "@/components/theme-toggle"
 
 export default function Home() {
   return (
@@ -33,12 +34,16 @@ export default function Home() {
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 mt-8 w-full justify-center">
-          <Button size="lg" className="rounded-full shadow-md h-12 px-8">
-            Get Started
-          </Button>
-          <Button size="lg" variant="outline" className="rounded-full h-12 px-8 bg-background/50 backdrop-blur-sm border-border/50">
-            View Documentation
-          </Button>
+          <Link href="/signup">
+            <Button size="lg" className="rounded-full shadow-md h-12 px-8">
+              Get Started
+            </Button>
+          </Link>
+          <Link href="/login">
+            <Button size="lg" variant="outline" className="rounded-full h-12 px-8 bg-background/50 backdrop-blur-sm border-border/50">
+              View Documentation
+            </Button>
+          </Link>
         </div>
       </div>
 
