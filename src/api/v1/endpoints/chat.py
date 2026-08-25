@@ -66,6 +66,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from src.api.deps import (
     get_conversation_service,
@@ -84,6 +85,7 @@ from src.api.v1.schemas.chat_schema import (
     SourceSchema,
 )
 from src.core.exceptions import LLMException
+from src.db.session import get_db
 from src.models.user_model import User
 from src.services.conversation_service import ConversationService
 from src.services.rag_service import RAGService
@@ -157,6 +159,7 @@ async def stream_answer(
     raw_request: Request,
     current_user: User = Depends(get_current_user),
     rag_service: RAGService = Depends(get_rag_service),
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     async def _event_generator():
         try:
@@ -173,6 +176,12 @@ async def stream_answer(
             yield _sse({"type": "error", "content": "LLM generation failed."})
         except Exception:
             yield _sse({"type": "error", "content": "An unexpected error occurred."})
+        finally:
+            # Streaming can outlive the request-scoped dependency teardown
+            # (middleware + StreamingResponse), so close the DB session
+            # here as well — this releases its transaction back to the
+            # pool on every exit path, including client disconnects.
+            db.close()
 
     return StreamingResponse(
         _event_generator(),

@@ -228,6 +228,7 @@ Rate limit: **10 requests/minute** for all `/auth/*` endpoints (separate from ge
 | GET | `/health/live` | No | Liveness check |
 | GET | `/health/ready` | No | Readiness: DB, Qdrant, Redis connectivity + latency |
 | GET | `/metrics` | No | Prometheus metrics (HTTP, DB, Qdrant, embedding, Redis, LLM) |
+| GET | `/api/v1/config/upload` | No | Upload constraints: max size (MB) + allowed extensions |
 
 ## Testing
 

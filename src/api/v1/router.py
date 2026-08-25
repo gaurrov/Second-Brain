@@ -6,10 +6,11 @@ including its router here — nothing else needs to change.
 """
 from fastapi import APIRouter
 
-from src.api.v1.endpoints import auth, chat, documents, users
+from src.api.v1.endpoints import auth, chat, config, documents, users
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(users.router)
 api_router.include_router(documents.router)
 api_router.include_router(chat.router)
+api_router.include_router(config.router)
