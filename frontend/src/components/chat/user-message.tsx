@@ -12,8 +12,8 @@ export function UserMessage({ message }: { message: ChatMessage }) {
     <div className="flex animate-in justify-end fade-in slide-in-from-bottom-2 duration-300">
       <div
         className={cn(
-          "max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5",
-          "text-sm leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-sm",
+          "max-w-[85%] rounded-xl rounded-br-md bg-primary px-4 py-2.5",
+          "text-sm leading-relaxed whitespace-pre-wrap text-primary-foreground",
         )}
       >
         {message.content}

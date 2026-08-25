@@ -46,7 +46,7 @@ export function UserMenu({ className }: { className?: string }) {
           className
         )}
       >
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/80 to-primary/50 text-xs font-semibold text-primary-foreground">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
           {initials(displayName)}
         </span>
         <span className="flex min-w-0 flex-1 flex-col items-start">
@@ -57,7 +57,7 @@ export function UserMenu({ className }: { className?: string }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-60">
         <div className="flex items-center gap-2.5 px-2 py-1.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary/80 to-primary/50 text-xs font-semibold text-primary-foreground">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
             {initials(displayName)}
           </span>
           <span className="flex min-w-0 flex-1 flex-col">

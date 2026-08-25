@@ -1,15 +1,33 @@
 "use client"
 
-import * as React from "react"
-import { Menu, MessageSquarePlus } from "lucide-react"
+import { Menu, PenLine } from "lucide-react"
+import { usePathname, useRouter } from "next/navigation"
 import { Tooltip } from "@base-ui/react/tooltip"
 
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { useChatStore } from "@/stores/chat-store"
+
+/** Contextual page label for the slim top bar. */
+function usePageHeading(): { title: string; subtitle: string } {
+  const pathname = usePathname()
+  if (pathname.startsWith("/settings")) {
+    return { title: "Settings", subtitle: "Account & preferences" }
+  }
+  return { title: "New chat", subtitle: "Chat with your knowledge base" }
+}
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
+  const router = useRouter()
+  const { title, subtitle } = usePageHeading()
+
+  const startNewChat = () => {
+    useChatStore.getState().newConversation()
+    router.push("/dashboard")
+  }
+
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/70 bg-background/80 px-3 backdrop-blur-md sm:px-5">
+    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border/60 bg-background/80 px-3 backdrop-blur-md sm:px-5">
       <Button
         variant="ghost"
         size="icon"
@@ -21,22 +39,24 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
       </Button>
 
       <div className="min-w-0 flex-1">
-        <h1 className="truncate text-sm font-semibold tracking-tight">New chat</h1>
-        <p className="truncate text-xs text-muted-foreground">
-          Chat with your knowledge base
-        </p>
+        <h1 className="truncate font-heading text-sm font-semibold tracking-tight">
+          {title}
+        </h1>
+        <p className="truncate text-xs text-muted-foreground/90">{subtitle}</p>
       </div>
-
-      <span className="hidden items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:text-amber-400 sm:inline-flex">
-        <span className="size-1.5 rounded-full bg-amber-500" />
-        Preview — backend not connected
-      </span>
 
       <Tooltip.Root>
         <Tooltip.Trigger
           render={
-            <Button variant="ghost" size="icon" aria-label="Start new chat">
-              <MessageSquarePlus />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={startNewChat}
+              className="gap-2 text-muted-foreground hover:text-foreground"
+              aria-label="Start new chat"
+            >
+              <PenLine />
+              <span className="hidden sm:inline">New</span>
             </Button>
           }
         />

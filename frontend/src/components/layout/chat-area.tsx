@@ -1,7 +1,5 @@
 "use client"
 
-import { Brain } from "lucide-react"
-
 import { useChatStore } from "@/stores/chat-store"
 import { ChatComposer } from "@/components/chat/chat-composer"
 import { EmptyChatState } from "@/components/chat/empty-chat-state"
@@ -43,13 +41,26 @@ export function ChatArea() {
 
 function LoadingHistory() {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center" aria-busy="true">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/60 text-primary-foreground shadow-sm">
-          <Brain className="size-4 animate-pulse" />
-        </span>
-        Loading conversation…
+    <div
+      className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col gap-7 px-4 py-8 sm:px-6"
+      aria-busy="true"
+      aria-label="Loading conversation"
+    >
+      {/* Skeleton transcript: user turn, then assistant reply. */}
+      <div className="flex justify-end">
+        <div className="space-y-2" aria-hidden="true">
+          <span className="block h-9 w-56 animate-pulse rounded-xl rounded-br-md bg-muted [animation-duration:1.5s]" />
+        </div>
       </div>
+      <div className="flex gap-3" aria-hidden="true">
+        <span className="mt-0.5 flex size-7 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted [animation-duration:1.5s]" />
+        <div className="min-w-0 flex-1 space-y-2.5 pt-1">
+          <span className="block h-3 w-[92%] animate-pulse rounded bg-muted [animation-duration:1.5s]" />
+          <span className="block h-3 w-[78%] animate-pulse rounded bg-muted [animation-duration:1.5s] [animation-delay:120ms]" />
+          <span className="block h-3 w-[54%] animate-pulse rounded bg-muted [animation-duration:1.5s] [animation-delay:240ms]" />
+        </div>
+      </div>
+      <span className="sr-only">Loading conversation…</span>
     </div>
   )
 }

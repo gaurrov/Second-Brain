@@ -1,7 +1,6 @@
 "use client"
 
-import * as React from "react"
-import { Moon, Sun } from "lucide-react"
+import { Check, Monitor, Moon, Sun } from "lucide-react"
 import { useTheme } from "next-themes"
 
 import {
@@ -11,28 +10,41 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
+const THEME_CHOICES = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "System", icon: Monitor },
+] as const
+
 export function ThemeToggle() {
-  const { setTheme } = useTheme()
+  const { setTheme, resolvedTheme, theme } = useTheme()
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="focus:outline-none">
-        <div className="inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 border border-input shadow-sm hover:bg-accent hover:text-accent-foreground h-9 w-9 rounded-full bg-background/50 backdrop-blur-sm border-border/50">
-          <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0 text-muted-foreground" />
-          <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100 text-muted-foreground" />
+        <div className="inline-flex size-9 items-center justify-center rounded-full border border-border/60 bg-background/60 text-sm font-medium shadow-xs backdrop-blur-sm transition-colors duration-150 hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0">
+          {/* Pure CSS resolution keeps server and client markup identical. */}
+          <Sun className="h-[1.15rem] w-[1.15rem] rotate-0 scale-100 text-muted-foreground transition-transform duration-200 dark:-rotate-90 dark:scale-0" />
+          <Moon className="absolute h-[1.15rem] w-[1.15rem] rotate-90 scale-0 text-muted-foreground transition-transform duration-200 dark:rotate-0 dark:scale-100" />
           <span className="sr-only">Toggle theme</span>
         </div>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="rounded-xl bg-background/80 backdrop-blur-md">
-        <DropdownMenuItem onClick={() => setTheme("light")} className="cursor-pointer rounded-lg">
-          Light
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("dark")} className="cursor-pointer rounded-lg">
-          Dark
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("system")} className="cursor-pointer rounded-lg">
-          System
-        </DropdownMenuItem>
+      <DropdownMenuContent align="end" className="w-40 rounded-xl">
+        {THEME_CHOICES.map(({ value, label, icon: Icon }) => {
+          const selected =
+            value === "system" ? theme === "system" : resolvedTheme === value
+          return (
+            <DropdownMenuItem
+              key={value}
+              onClick={() => setTheme(value)}
+              className="cursor-pointer gap-2.5"
+            >
+              <Icon className="size-4 text-muted-foreground" />
+              <span className="flex-1">{label}</span>
+              {selected && <Check className="size-3.5 text-primary" />}
+            </DropdownMenuItem>
+          )
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   )

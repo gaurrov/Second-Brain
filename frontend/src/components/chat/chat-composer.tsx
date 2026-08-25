@@ -56,8 +56,8 @@ export function ChatComposer({
       >
         <div
           className={cn(
-            "rounded-2xl border border-border bg-card shadow-sm transition-all duration-200",
-            "focus-within:border-ring/60 focus-within:ring-4 focus-within:ring-ring/10",
+            "rounded-2xl border border-border bg-card shadow-xs shadow-black/[0.03] transition-[border-color,box-shadow] duration-200 ease-out",
+            "focus-within:border-ring/50 focus-within:ring-[3px] focus-within:ring-ring/10",
           )}
         >
           <label htmlFor="chat-input" className="sr-only">
@@ -74,11 +74,11 @@ export function ChatComposer({
             aria-busy={isStreaming}
             className={cn(
               "block max-h-40 w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-sm outline-none",
-              "placeholder:text-muted-foreground field-sizing-content",
+              "placeholder:text-muted-foreground/80 field-sizing-content",
             )}
           />
           <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-            <span className="hidden text-xs text-muted-foreground sm:block">
+            <span className="hidden text-xs text-muted-foreground/90 sm:block">
               {isStreaming ? "Memora is responding…" : "Enter to send · Shift+Enter for a new line"}
             </span>
             {isStreaming ? (
@@ -90,7 +90,7 @@ export function ChatComposer({
                 variant="secondary"
                 className="rounded-full"
               >
-                <Square className="size-3" />
+                <Square className="size-3 fill-current" />
               </Button>
             ) : (
               <Button
@@ -105,7 +105,7 @@ export function ChatComposer({
             )}
           </div>
         </div>
-        <p className="mt-2 text-center text-[11px] text-muted-foreground">
+        <p className="mt-2.5 text-center text-[11px] leading-relaxed text-muted-foreground/70">
           Memora answers from your knowledge base and may make mistakes — verify important information.
         </p>
       </form>

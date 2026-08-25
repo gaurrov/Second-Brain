@@ -61,7 +61,7 @@ export function ConversationsSidebar() {
   return (
     <section aria-label="Conversations" className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between px-1 pb-1.5">
-        <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+        <h2 className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
           Conversations
         </h2>
         <Button
@@ -120,7 +120,7 @@ function ConversationGroupSection({
 }) {
   return (
     <div className="mb-2">
-      <p className="px-2 pb-1 text-[11px] font-medium text-muted-foreground/80 first:pt-1">
+      <p className="px-2 pb-1 text-[10px] font-medium uppercase tracking-widest text-muted-foreground/80 first:pt-1">
         {group.label}
       </p>
       <ul className="space-y-0.5" role="presentation">
@@ -225,7 +225,7 @@ function SkeletonGroups() {
 
 function LoadErrorState({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-border/80 px-3 py-5 text-center">
+    <div className="rounded-xl bg-muted/30 px-3 py-5 text-center">
       <p className="text-xs text-muted-foreground">Couldn&apos;t load conversations.</p>
       <Button variant="link" size="xs" className="mt-1" onClick={onRetry}>
         Try again
@@ -236,7 +236,7 @@ function LoadErrorState({ onRetry }: { onRetry: () => void }) {
 
 function EmptyHistory({ onNew }: { onNew: () => void }) {
   return (
-    <div className="rounded-xl border border-dashed border-border/80 px-3 py-5 text-center">
+    <div className="rounded-xl bg-muted/30 px-3 py-5 text-center">
       <p className="text-xs leading-relaxed text-muted-foreground">
         No conversations yet.
         <br />

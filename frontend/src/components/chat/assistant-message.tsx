@@ -29,12 +29,15 @@ export function AssistantMessage({
 
   return (
     <div className="group/assistant flex animate-in gap-3 fade-in slide-in-from-bottom-2 duration-300">
-      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-primary/60 text-primary-foreground shadow-sm">
+      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
         <Brain className="size-3.5" />
       </span>
       <div className="min-w-0 flex-1">
         {empty ? null : message.failed ? (
-          <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-3.5 py-2.5 text-sm leading-relaxed text-destructive">
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3.5 py-2.5 text-sm leading-relaxed text-destructive"
+          >
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             <span>{message.content}</span>
           </div>
@@ -44,7 +47,7 @@ export function AssistantMessage({
             {isStreaming && (
               <span
                 aria-hidden="true"
-                className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded-full bg-primary align-text-bottom"
+                className="ml-0.5 inline-block h-4 w-[2px] animate-caret rounded-full bg-foreground/80 align-text-bottom"
               />
             )}
           </>
@@ -82,7 +85,7 @@ function CopyAction({ content }: { content: string }) {
       onClick={() => void handleCopy()}
       aria-label={copied ? "Copied" : "Copy answer"}
       className={cn(
-        "mt-1 text-muted-foreground opacity-0 transition-opacity",
+        "mt-1.5 text-muted-foreground opacity-0 transition-[opacity,color] duration-150",
         "focus-visible:opacity-100 group-hover/assistant:opacity-100",
         copied && "opacity-100 text-emerald-600 dark:text-emerald-400",
       )}

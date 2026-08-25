@@ -133,7 +133,7 @@ export function DocumentSidebar() {
       {/* List */}
       <div className="flex min-h-0 flex-1 flex-col" aria-busy={isLoading}>
         <div className="flex items-center justify-between px-1 pb-1.5">
-          <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          <h2 className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
             Documents
           </h2>
           {total > 0 && (
@@ -337,7 +337,7 @@ function LoadErrorState({
 
 function EmptyLibrary() {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-border/80 px-4 py-8 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center rounded-xl bg-muted/30 px-4 py-8 text-center">
       <div className="mb-3 flex size-10 items-center justify-center rounded-full bg-primary/10">
         <FileText className="size-5 text-primary" />
       </div>
@@ -357,11 +357,11 @@ function EmptyLibrary() {
 
 function NoResults({ query, onClear }: { query: string; onClear: () => void }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center px-4 py-8 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center bg-muted/30 px-4 py-8 text-center">
       <Search className="mb-2 size-5 text-muted-foreground/60" />
       <p className="text-sm font-medium">No matches</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        Nothing found for “{query.trim()}”.
+        Nothing found for &ldquo;{query.trim()}&rdquo;.
       </p>
       <Button variant="link" size="xs" className="mt-2" onClick={onClear}>
         Clear search

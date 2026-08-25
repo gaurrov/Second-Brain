@@ -85,9 +85,10 @@ export function SourceCards({ sources }: { sources: ChatSource[] }) {
             title={typeof source.page === "number" ? `${source.filename} — page ${source.page}` : source.filename}
             aria-label={`Open details for ${source.filename}${typeof source.page === "number" ? `, page ${source.page}` : ""}`}
             className={cn(
-              "group/source flex items-center gap-2 rounded-xl border border-border/80 bg-card px-2.5 py-2 text-left shadow-xs outline-none transition-all",
-              "hover:-translate-y-0.5 hover:border-ring/40 hover:shadow-md",
-              "focus-visible:ring-2 focus-visible:ring-ring/50 active:translate-y-0",
+              "group/source flex items-center gap-2 rounded-xl border border-border/80 bg-card px-2.5 py-2 text-left shadow-xs outline-none",
+              "transition-[border-color,background-color,box-shadow] duration-150 ease-out",
+              "hover:border-ring/35 hover:bg-muted/40 hover:shadow-sm",
+              "focus-visible:border-ring/60 focus-visible:ring-2 focus-visible:ring-ring/25",
             )}
           >
             <SourceFileIcon filename={source.filename} />
