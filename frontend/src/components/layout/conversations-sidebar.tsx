@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { usePathname, useRouter } from "next/navigation"
 import { Check, MessageSquare, Plus, Trash2, X } from "lucide-react"
 
 import type { Conversation } from "@/types"
@@ -27,6 +28,9 @@ export function ConversationsSidebar() {
   const newConversation = useChatStore((state) => state.newConversation)
   const deleteConversation = useChatStore((state) => state.deleteConversation)
 
+  const router = useRouter()
+  const pathname = usePathname()
+
   const [deletingId, setDeletingId] = React.useState<string | null>(null)
 
   React.useEffect(() => {
@@ -38,6 +42,13 @@ export function ConversationsSidebar() {
     () => groupConversationsByDate(conversations),
     [conversations],
   )
+
+  const handleSelect = (id: string) => {
+    void openConversation(id)
+    if (!pathname.startsWith("/dashboard")) {
+      router.push("/dashboard")
+    }
+  }
 
   const handleDelete = async (conversation: Conversation) => {
     setDeletingId(null)
@@ -89,7 +100,7 @@ export function ConversationsSidebar() {
               group={group}
               activeId={activeId}
               deletingId={deletingId}
-              onSelect={(id) => void openConversation(id)}
+              onSelect={handleSelect}
               onConfirmDelete={(id) => setDeletingId(id)}
               onCancelDelete={() => setDeletingId(null)}
               onDelete={(conversation) => void handleDelete(conversation)}
