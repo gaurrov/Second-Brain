@@ -133,6 +133,22 @@ services:
       app:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js SPA
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+
 volumes:
   pg_data:
   qdrant_data:
